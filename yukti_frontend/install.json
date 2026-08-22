@@ -1,0 +1,5 @@
+{
+  "packageManager": "python",
+  "packageName": "yukti",
+  "uninstallInstructions": "Use `pip uninstall yukti` to remove Yukti."
+}

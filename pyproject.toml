@@ -1,0 +1,58 @@
+[build-system]
+requires = [
+    "hatchling>=1.4.0",
+    "hatch-jupyter-builder>=0.9",
+    "jupyterlab>=4,<5",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "yukti"
+readme = "README.md"
+description = "Ask Codex about the visible prefix of a Jupyter notebook"
+authors = [{ name = "Yeshwanth Sizhky" }]
+keywords = ["ipython", "jupyterlab", "codex", "notebook"]
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+classifiers = [
+    "Framework :: Jupyter",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dynamic = ["version"]
+
+dependencies = ["ipython>=8", "ipykernel>=6", "jupyterlab>=4,<5"]
+
+[project.urls]
+Source = "https://github.com/yeshwanth/yukti"
+
+[tool.hatch.version]
+path = "yukti/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["yukti_frontend/labextension"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["yukti"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"yukti_frontend/labextension" = "share/jupyter/labextensions/yukti"
+"yukti_frontend/install.json" = "share/jupyter/labextensions/yukti/install.json"
+
+[tool.hatch.build.hooks.jupyter-builder]
+dependencies = ["hatch-jupyter-builder>=0.9"]
+build-function = "hatch_jupyter_builder.npm_builder"
+ensured-targets = ["yukti_frontend/labextension/package.json"]
+skip-if-exists = ["yukti_frontend/labextension/package.json"]
+
+[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+build_cmd = "build:prod"
+npm = ["npm"]
+source_dir = "yukti_frontend/src"
+build_dir = "yukti_frontend/labextension"

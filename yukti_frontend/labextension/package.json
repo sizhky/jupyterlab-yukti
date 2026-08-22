@@ -1,0 +1,34 @@
+{
+  "name": "yukti",
+  "version": "0.0.4",
+  "description": "Send the visible notebook prefix to the Yukti IPython magic",
+  "license": "BSD-3-Clause",
+  "main": "yukti_frontend/lib/index.js",
+  "types": "yukti_frontend/lib/index.d.ts",
+  "files": [
+    "yukti_frontend/lib"
+  ],
+  "scripts": {
+    "build:lib": "tsc -b yukti_frontend",
+    "build:prod": "npm run build:lib && jupyter labextension build .",
+    "clean": "rimraf yukti_frontend/lib yukti_frontend/labextension yukti_frontend/tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@jupyterlab/application": "^4.4.0",
+    "@jupyterlab/nbformat": "^4.4.0",
+    "@jupyterlab/notebook": "^4.4.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.4.0",
+    "rimraf": "^6.0.0",
+    "typescript": "~5.8.2"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "yukti_frontend/labextension",
+    "_build": {
+      "load": "static/remoteEntry.f5de007485b9436980ff.js",
+      "extension": "./extension"
+    }
+  }
+}
