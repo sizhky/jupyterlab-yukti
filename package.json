@@ -5,7 +5,9 @@
   "license": "BSD-3-Clause",
   "main": "yukti_frontend/lib/index.js",
   "types": "yukti_frontend/lib/index.d.ts",
-  "files": ["yukti_frontend/lib"],
+  "files": [
+    "yukti_frontend/lib"
+  ],
   "scripts": {
     "build:lib": "tsc -b yukti_frontend",
     "build:prod": "npm run build:lib && jupyter labextension build .",

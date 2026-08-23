@@ -95,11 +95,16 @@ const plugin: JupyterFrontEndPlugin<void> = {
         if (currentIndex < 0) {
           return;
         }
-        if (data.type === 'insert_code_cell' && typeof data.source === 'string') {
+        const cellType = data.cell_type;
+        if (
+          data.type === 'insert_cell' &&
+          (cellType === 'code' || cellType === 'markdown') &&
+          typeof data.source === 'string'
+        ) {
           notebook.model.sharedModel.insertCell(currentIndex + 1, {
-            cell_type: 'code',
+            cell_type: cellType,
             source: data.source,
-            metadata: { trusted: false }
+            metadata: cellType === 'code' ? { trusted: false } : {}
           });
           notebook.activeCellIndex = currentIndex + 1;
           return;

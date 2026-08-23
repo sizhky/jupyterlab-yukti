@@ -7,7 +7,8 @@ requires = [
 build-backend = "hatchling.build"
 
 [project]
-name = "yukti"
+name = "jupyterlab-yukti"
+version = "0.0.4"
 readme = "README.md"
 description = "Ask Codex about the visible prefix of a Jupyter notebook"
 authors = [{ name = "Yeshwanth Sizhky" }]
@@ -16,6 +17,9 @@ license = { file = "LICENSE" }
 requires-python = ">=3.9"
 classifiers = [
     "Framework :: Jupyter",
+    "Framework :: Jupyter :: JupyterLab :: 4",
+    "Framework :: Jupyter :: JupyterLab :: Extensions",
+    "Framework :: Jupyter :: JupyterLab :: Extensions :: Prebuilt",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
@@ -25,15 +29,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-dynamic = ["version"]
-
 dependencies = ["ipython>=8", "ipykernel>=6", "jupyterlab>=4,<5"]
 
 [project.urls]
-Source = "https://github.com/yeshwanth/yukti"
-
-[tool.hatch.version]
-path = "yukti/__init__.py"
+Source = "https://github.com/sizhky/jupyterlab-yukti"
 
 [tool.hatch.build.targets.sdist]
 artifacts = ["yukti_frontend/labextension"]

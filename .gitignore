@@ -1,3 +1,4 @@
+yukti_frontend/labextension/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -225,3 +226,4 @@ yukti/_version.py
 
 node_modules/
 *.tsbuildinfo
+.venv-release/

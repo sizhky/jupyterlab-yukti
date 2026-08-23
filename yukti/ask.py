@@ -26,16 +26,21 @@ SPINNER = HTML(
 EDIT_REQUEST = """
 [%%ask --edit]
 Return only one JSON action using one of these shapes:
-{"type":"insert_code_cell","source":"<complete code>"}
+{"type":"insert_cell","cell_type":"code|markdown","source":"<complete source>"}
 {"type":"replace_cells","cells":[{"cell_id":"<id>","source":"<complete source>"}]}
+Use markdown for prose, formulas, and documentation. Use code for executable source.
 Use only cell_id values present in the transcript. Do not use Markdown fences.
 """
 
 
 def parse_edit(answer: str, cells: list[dict[str, Any]]) -> dict[str, Any]:
     action = json.loads(answer)
-    if isinstance(action, dict) and action.get("type") == "insert_code_cell":
-        if set(action) == {"type", "source"} and isinstance(action["source"], str):
+    if isinstance(action, dict) and action.get("type") == "insert_cell":
+        if (
+            set(action) == {"type", "cell_type", "source"}
+            and action["cell_type"] in {"code", "markdown"}
+            and isinstance(action["source"], str)
+        ):
             return action
     if isinstance(action, dict) and action.get("type") == "replace_cells":
         replacements = action.get("cells")
@@ -101,7 +106,7 @@ class YuktiMagics(Magics):
                         comm.send({**action, "request_id": request_id})
                     finally:
                         comm.close()
-                    message = "Added a code cell below."
+                    message = f"Added a {action.get('cell_type', 'notebook')} cell below."
                     if action["type"] == "replace_cells":
                         message = f"Updated {len(action['cells'])} cell(s)."
                     handle.update(Markdown(message))
