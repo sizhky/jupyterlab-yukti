@@ -79,23 +79,31 @@ Run `make` with no target to see this list.
 | `check`   | `twine check --strict` on both artifacts.                     |
 | `verify`  | Install the wheel in a throwaway env and prove it loads.      |
 | `tag`     | Create the annotated tag `v<version>`, locally.               |
-| `publish` | Upload to `REPO`. Prompts for the version first.              |
+| `publish` | Upload to `REPO`. Announces what it is uploading, then does it. |
 | `push`    | Push the branch and the tag in one atomic step.               |
 | `dry`     | `guard test build check verify`. Ships nothing.               |
 | `ship`    | `dry` plus `tag publish push`. No bump.                       |
 | `release` | `stage`, then `ship`.                                         |
 
-Four knobs, no flags:
+Three knobs, no flags:
 
 - `PART=patch` — `patch`, `minor`, `major`, or `none`
 - `MSG=` — commit message for your work; unset means "refuse to commit it"
 - `REPO=sizhky` — a `~/.pypirc` section, or `pypi`, or `testpypi`
-- `YES=1` — skip the upload prompt, for unattended runs
 
 Every step runs alone. `make build verify` is the useful pair while developing.
 
 `release` re-enters `make` twice. Make reads the version when it starts, so
 `ship` has to begin after `stage` has written the new one.
+
+### No confirmation prompt
+
+`publish` does not ask you to confirm. Seven gates run before it: a clean tree,
+matching versions, an unused tag, the test suite, the build, `twine check
+--strict`, and a clean-environment install. A prompt that fires on every release
+adds nothing to that, and one you see every time is one you stop reading.
+
+`make dry` is where caution belongs. It runs every gate and ships nothing.
 
 ## Why this order
 

@@ -23,8 +23,6 @@ REPO ?= sizhky
 PART ?= patch
 # Message for your uncommitted work. Unset means "refuse to commit it".
 MSG ?=
-# Set to any value to skip the upload prompt.
-YES ?=
 
 # Read once per make run. `release` re-enters make after `bump`, so the later
 # steps read the version that `bump` just wrote, not the one it replaced.
@@ -54,7 +52,7 @@ help:  ## show this help
 	@printf '\n  %s %s  ->  %s\n\n' "$(DIST)" "$(VERSION)" "$(REPO)"
 	@grep -hE '^[a-z]+:.*##' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' \
 		| awk -F'|' '{printf "  make %-9s %s\n", $$1, $$2}'
-	@printf '\n  knobs: PART=%s REPO=%s MSG=%s YES=%s\n' "$(PART)" "$(REPO)" "$(MSG)" "$(YES)"
+	@printf '\n  knobs: PART=%s REPO=%s MSG=%s\n' "$(PART)" "$(REPO)" "$(MSG)"
 	@printf '  usage: make release PART=minor MSG="what you changed"\n\n'
 
 bump:  ## write the new version to the files, no git (PART=patch/minor/major/none)
@@ -116,10 +114,7 @@ tag:  ## create the annotated tag, locally only
 publish:  ## upload to REPO -- PyPI never reuses a version, so this is final
 	@ls $(WHL) $(SDIST) >/dev/null 2>&1 \
 		|| { echo 'publish: no artifacts for $(VERSION); run make build'; exit 1; }
-	@if [ -z "$(YES)" ]; then \
-		printf 'upload %s %s to %s.\ntype the version to confirm: ' "$(DIST)" "$(VERSION)" "$(REPO)"; \
-		read ans; [ "$$ans" = "$(VERSION)" ] || { echo 'aborted'; exit 1; }; \
-	fi
+	@echo 'publish: uploading $(DIST) $(VERSION) to $(REPO)'
 	$(TWINE) upload --repository $(REPO) $(WHL) $(SDIST)
 
 push:  ## push the branch and the tag in one atomic step
