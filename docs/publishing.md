@@ -12,8 +12,8 @@ The recipe is a `Makefile`. It runs on your machine.
 | `checkpoint` (`~/.zshrc`) | Branch promotion: `feature/* -> dev -> main` |
 | `make` (this repo)       | One version: build, verify, release     |
 
-Keep them apart. Use `checkpoint main "message"` to promote, then `make release`
-to ship. Do not use `checkpoint --publish` on this repo, for two reasons:
+`checkpoint` still owns the branch graph. `make release` never merges and never
+switches branches; it commits, tags, and pushes wherever you already stand. Do not use `checkpoint --publish` on this repo, for two reasons:
 
 1. Its publish steps run through `_ckp_try`, which prints a note and continues
    when a step fails. A failed build still reaches `twine upload`.
@@ -24,41 +24,66 @@ Both are fixed here. The version is now static, and every `make` step fails loud
 
 ## Normal release
 
+One command:
+
 ```
-make bump              # 0.0.4 -> 0.0.5 in pyproject.toml, uv.lock, package.json
-checkpoint main "..."  # or plain git: commit the bump
-make dry               # every check, ships nothing
-make release           # the real thing
+make release PART=minor MSG="what you changed"
 ```
 
-`make bump` and `make release` must be separate commands. Make reads the version
-once when it starts, so a bump in the same run would go unseen.
+It commits your work, raises the version, runs every gate, then publishes and
+pushes. `PART` is `patch`, `minor`, `major`, or `none`. `none` ships the current
+version without raising it, which is what a first release wants.
+
+`MSG` is the opt-in for `git add -A`. Leave it out and the recipe refuses:
+
+```
+commit: the tree is dirty, and I will not guess a message.
+  commit it yourself, or re-run with MSG="what you changed"
+```
+
+That is deliberate. `checkpoint` commits everything under a timestamp when you
+give it no message, so work lands in a release with no record of what it was.
+Here you either name the change or commit it yourself first. If your tree is
+already clean, `MSG` is not needed.
+
+Check first, ship nothing:
+
+```
+make dry
+```
 
 ## The recipe
 
 Run `make` with no target to see this list.
 
-| Step      | Action                                                       |
-| --------- | ------------------------------------------------------------ |
-| `bump`    | Raise the version in `pyproject.toml`, `uv.lock`, `package.json`. |
-| `clean`   | Delete every build output.                                   |
-| `guard`   | Refuse a dirty tree, a version mismatch, or a used tag.      |
-| `build`   | Build the labextension, then the sdist and the wheel.        |
-| `check`   | `twine check --strict` on both artifacts.                    |
-| `verify`  | Install the wheel in a throwaway env and prove it loads.     |
-| `tag`     | Create the annotated tag `v<version>`, locally.              |
-| `publish` | Upload to `REPO`. Prompts for the version first.             |
-| `push`    | Push the branch and the tag.                                 |
-| `dry`     | `guard build check verify`. Ships nothing.                   |
-| `release` | `dry` plus `tag publish push`.                               |
+| Step      | Action                                                        |
+| --------- | ------------------------------------------------------------- |
+| `commit`  | Commit your work. Needs `MSG` when the tree is dirty.         |
+| `bump`    | Raise the version in `pyproject.toml`, `uv.lock`, `package.json`, then commit that alone. |
+| `clean`   | Delete every build output.                                    |
+| `guard`   | Refuse a dirty tree, a version mismatch, or a used tag.       |
+| `test`    | Run the fast test suite.                                      |
+| `build`   | Build the labextension, then the sdist and the wheel.         |
+| `check`   | `twine check --strict` on both artifacts.                     |
+| `verify`  | Install the wheel in a throwaway env and prove it loads.      |
+| `tag`     | Create the annotated tag `v<version>`, locally.               |
+| `publish` | Upload to `REPO`. Prompts for the version first.              |
+| `push`    | Push the branch and the tag in one atomic step.               |
+| `dry`     | `guard test build check verify`. Ships nothing.               |
+| `ship`    | `dry` plus `tag publish push`. No bump.                       |
+| `release` | `commit`, `bump`, then `ship`.                                |
 
-Three knobs, no flags:
+Four knobs, no flags:
 
+- `PART=patch` — `patch`, `minor`, `major`, or `none`
+- `MSG=` — commit message for your work; unset means "refuse to commit it"
 - `REPO=sizhky` — a `~/.pypirc` section, or `pypi`, or `testpypi`
-- `PART=patch` — for `make bump`
 - `YES=1` — skip the upload prompt, for unattended runs
 
-Every step runs alone. `make verify` after a `make build` is the useful pair.
+Every step runs alone. `make build verify` is the useful pair while developing.
+
+`release` re-enters `make` three times, once per stage. Make reads the version
+when it starts, so `ship` has to begin after `bump` has written the new one.
 
 ## Why this order
 
@@ -75,20 +100,32 @@ import ok: 0.0.4
 ```
 
 `publish` runs before `push`. A public tag then always points at a released
-version. The reverse order can leave a public tag that PyPI never received,
+version. The push is atomic, so the branch and the tag land together or not at all. The reverse order can leave a public tag that PyPI never received,
 and deleting a public tag is worse than pushing one late.
 
 ## First release
 
-Upload to TestPyPI first. It is the one rehearsal you get.
+`0.0.4` has never reached PyPI, and the name `jupyterlab-yukti` is free, so ship
+the current version rather than raising it:
+
+```
+make release PART=none MSG="add the release recipe"
+```
+
+The remote `sizhky/jupyterlab-yukti` is empty until this runs. `release` pushes
+the branch and the tag together at the end, which fills it.
+
+A TestPyPI rehearsal is the textbook advice, and it needs a `[testpypi]` section
+in `~/.pypirc` that you do not have yet:
 
 ```
 make dry
 make publish REPO=testpypi
 ```
 
-Then install from TestPyPI in a scratch environment and open JupyterLab. When
-that looks right, run `make release`.
+Skip it if you want. Its value here is small, because `verify` already installs
+the real wheel in a clean environment and reads back `enabled OK`, and
+`twine check --strict` already validated how the README will render.
 
 ## Packaging changes made for this
 
