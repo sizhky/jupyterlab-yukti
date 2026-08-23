@@ -77,17 +77,23 @@ class YuktiMagics(Magics):
                     },
                 )
 
-                handle = display(Markdown(""), display_id=True)
+                # The spinner is created first so it stays above the message
+                # blocks, which are appended as the turn streams.
                 spinner = display(SPINNER, display_id=True)
                 stream = ActionStream(cells)
+                handles: dict[int, Any] = {}
 
                 def apply(events) -> None:
                     for event in events:
                         if isinstance(event, Action):
                             trace.write("notebook_send", event.payload)
                             comm.send({**event.payload, "request_id": request_id})
+                        elif event.block in handles:
+                            handles[event.block].update(Markdown(event.text))
                         else:
-                            handle.update(Markdown(event.text))
+                            handles[event.block] = display(
+                                Markdown(event.text), display_id=True
+                            )
 
                 try:
                     answer = server.run(

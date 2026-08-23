@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from IPython.core.error import UsageError
+from IPython.display import Markdown
 
 from yukti.ask import YuktiMagics
 
@@ -93,3 +94,41 @@ def test_debug_stops_before_the_model_turn():
     assert payload.details == {"command": ["codex"]}
     server.run.assert_not_called()
     comm.close.assert_called_once_with()
+
+
+def test_each_message_block_renders_into_its_own_output():
+    """One display handle per block, so earlier prose is not overwritten."""
+    insert = {
+        "type": "insert_cells",
+        "cells": [{"cell_type": "code", "source": "1"}],
+    }
+    comm = MagicMock()
+    magic = build_magic(comm)
+    server = MagicMock()
+    server.__enter__.return_value = server
+
+    def run(_transcript, on_delta, on_event):
+        on_delta("Naive recursion.\n%%action\n" + json.dumps(insert) + "\n")
+        on_delta("Memoised version.")
+        return ""
+
+    server.run.side_effect = run
+    outputs = []
+
+    def show(obj, **_):
+        handle = MagicMock()
+        outputs.append((obj, handle))
+        return handle
+
+    with patch("yukti.ask.AppServer", return_value=server), patch(
+        "yukti.ask.display", side_effect=show
+    ):
+        magic.ask("", "three versions")
+
+    # The spinner is not Markdown; every remaining output is a message block.
+    blocks = [(obj.data, handle) for obj, handle in outputs if isinstance(obj, Markdown)]
+    assert [text for text, _ in blocks] == ["Naive recursion.", "Memoised"]
+
+    first, second = (handle for _, handle in blocks)
+    first.update.assert_not_called()
+    assert second.update.call_args.args[0].data == "Memoised version."

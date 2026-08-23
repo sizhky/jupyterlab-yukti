@@ -23,11 +23,13 @@ MARKER = "\n%%action\n"
 class Message:
     """Markdown for the cell output, cumulative inside one message block.
 
-    A block restarts empty after every action, because the notebook keeps one
-    display handle and each update replaces the whole block.
+    Text restarts empty after every action, so ``block`` counts the blocks.
+    A caller that renders every block into one output would erase the earlier
+    ones; give each block its own output instead.
     """
 
     text: str
+    block: int
 
 
 @dataclass(frozen=True)
@@ -47,21 +49,25 @@ class ActionStream:
     ``%%action``, then writes one JSON action on one line. A bare JSON line is
     also accepted, because the model sometimes skips the marker.
 
+    Each action closes the current message block, so the next message starts a
+    new one:
+
     >>> stream = ActionStream()
     >>> stream.feed("Adding a cell.\\n%%action\\n")
-    [Message(text='Adding a cell.')]
+    [Message(text='Adding a cell.', block=0)]
     >>> stream.feed('{"type":"answer","source":"hi"}\\n')
     [Action(payload={'type': 'answer', 'source': 'hi'})]
     >>> stream.feed("Done.")
     []
     >>> stream.finish()
-    [Message(text='Done.')]
+    [Message(text='Done.', block=1)]
     """
 
     def __init__(self, cells: Sequence[Mapping[str, Any]] = ()) -> None:
         self._cells = list(cells)
         self._pending = ""
         self._text = ""
+        self._block = 0
         self._in_action = False
         self.received_delta = False
 
@@ -77,7 +83,11 @@ class ActionStream:
                 line, self._pending = self._pending.split("\n", 1)
                 if line.strip():
                     events.append(Action(parse_action(line, self._cells)))
+                # The block ends with the action it announced. Reset the text
+                # and the block index together, so a caller never updates a
+                # closed block with the next block's text.
                 self._text = ""
+                self._block += 1
                 self._in_action = False
                 continue
             if MARKER in self._pending:
@@ -112,4 +122,4 @@ class ActionStream:
 
     def _grow(self, visible: str) -> Message:
         self._text += visible
-        return Message(self._text)
+        return Message(self._text, self._block)
