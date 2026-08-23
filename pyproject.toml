@@ -34,6 +34,12 @@ dependencies = ["ipython>=8", "ipykernel>=6", "jupyterlab>=4,<5"]
 [project.urls]
 Source = "https://github.com/sizhky/jupyterlab-yukti"
 
+[tool.pytest.ini_options]
+# Doctests run with the suite, so the examples in the module docstrings cannot
+# rot. Pro: examples stay true. Con: every module gets imported at collection.
+addopts = "--doctest-modules"
+testpaths = ["yukti"]
+
 [tool.hatch.build.targets.sdist]
 artifacts = ["yukti_frontend/labextension"]
 
