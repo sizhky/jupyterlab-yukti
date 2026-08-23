@@ -17,11 +17,12 @@ from IPython.core.error import UsageError
 from IPython.core.magic import Magics, cell_magic, line_cell_magic, magics_class
 from IPython.display import HTML, Markdown, display
 
+from .actions import action_line, tool_payload
 from .app_server import AppServer
 from .comm import NotebookPrefixCache, register_prefix_comm
 from .context import build_transcript
 from .settings import DEFAULTS, help_text, parse_settings, summary
-from .stream import Action, ActionStream
+from .stream import MessageStream
 from .trace import Trace
 
 
@@ -128,36 +129,48 @@ class YuktiMagics(Magics):
                 # The spinner is created first so it stays above the message
                 # blocks, which are appended as the turn streams.
                 spinner = display(SPINNER, display_id=True)
-                stream = ActionStream(cells)
+                stream = MessageStream()
                 handles: dict[int, Any] = {}
 
-                def apply(events) -> None:
-                    for event in events:
-                        if isinstance(event, Action):
-                            trace.write("notebook_send", event.payload)
-                            comm.send({**event.payload, "request_id": request_id})
-                        elif event.block in handles:
-                            handles[event.block].update(Markdown(event.text))
-                        else:
-                            handles[event.block] = display(
-                                Markdown(event.text), display_id=True
-                            )
+                def show(message) -> None:
+                    if message.block in handles:
+                        handles[message.block].update(Markdown(message.text))
+                    else:
+                        handles[message.block] = display(
+                            Markdown(message.text), display_id=True
+                        )
 
                 # A tool line is its own output below the message it follows,
                 # so prose that keeps growing stays in the block above it.
                 def show_tool(line: str) -> None:
                     display(Markdown(f"`{line}`"))
 
+                def change_notebook(tool: str, arguments: Any) -> str:
+                    """Apply one Codex tool call and say what the notebook got.
+
+                    The frontend never answers, so the sentence the model
+                    reads reports what Yukti sent, not what the notebook drew.
+                    """
+                    payload = tool_payload(tool, arguments, cells)
+                    trace.write("notebook_send", payload)
+                    comm.send({**payload, "request_id": request_id})
+                    # The call closes the block it followed, so the next
+                    # message opens an output below this line.
+                    stream.close()
+                    line = action_line(payload)
+                    show_tool(line)
+                    return f"sent to the notebook: {line}"
+
                 try:
                     answer = server.run(
                         transcript,
-                        on_delta=lambda delta: apply(stream.feed(delta)),
+                        on_delta=lambda delta: show(stream.feed(delta)),
                         on_event=lambda event: trace.write("codex_event", event),
                         on_tool=show_tool,
+                        on_action=change_notebook,
                     )
                     if not stream.received_delta:
-                        apply(stream.feed(answer))
-                    apply(stream.finish())
+                        show(stream.feed(answer))
                 finally:
                     spinner.update(HTML(""))
                     comm.close()

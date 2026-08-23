@@ -6,38 +6,44 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
+from .actions import TOOL_SPECS
 from .settings import APPROVAL_PARAMS, DEFAULTS
 
 
 PREAMBLE = """You are Yukti. Answer the final [user] question using the notebook
 transcript in the user message. """
-NO_TOOLS = "Use only that transcript. Do not call tools."
+NO_TOOLS = "Use only that transcript. Do not run commands and do not read files."
 TOOLS = """You may also read and change files under the working
 directory and run commands there. Say in your streamed messages what you
 changed on disk."""
+# The insert_cells and replace_cells shapes are the tool schemas, not prose,
+# so this text says only what a schema cannot: when to call, and how often.
 ACTION_RULES = """
 
-Stream non-action messages as Markdown text. Before every action, stream one short
-message that explains the cell you are about to create or change. Never emit two
-actions without a message between them. After the final action, stream a short
-completion message. End each action message with a line containing only %%action,
-then write one complete JSON action on one line using one of these shapes:
-{"type":"insert_cells","cells":[{"cell_type":"code|markdown","source":"<complete source>"}]}
-{"type":"replace_cells","cells":[{"cell_id":"<id>","source":"<complete source>"}]}
-After the JSON line, continue streaming Markdown or start the next %%action.
-Each insert_cells action must contain exactly one cell. Continue until every cell
-requested by the user has been inserted. For questions, return only Markdown.
-Use markdown for prose, formulas, and documentation. Use code for executable source.
-Write inline formulas as $...$ and display formulas as $$...$$.
-Use transcript cell_id values for replace_cells. Do not use Markdown fences."""
+Change the notebook only by calling insert_cells and replace_cells. Never write
+an action as text, and never ask the user to paste a cell.
+Stream your messages as Markdown text. Before every call, stream one short
+message that explains the cell you are about to create or change. Never make two
+calls without a message between them. After the last call, stream a short
+completion message. Each insert_cells call must carry exactly one cell.
+Continue until every cell the user asked for exists. For a question, answer in
+Markdown and call nothing.
+Use markdown cells for prose, formulas, and documentation. Use code cells for
+executable source. Write inline formulas as $...$ and display formulas as $$...$$.
+Use transcript cell_id values for replace_cells."""
 
 
 def base_instructions(tools: bool) -> str:
-    """Yukti's own instruction, with or without permission to use tools.
+    """Yukti's own instruction, with or without permission to touch the disk.
 
-    >>> base_instructions(False).splitlines()[1].endswith("Do not call tools.")
+    The cell tools are always there, so ``tools`` governs the shell and the
+    file system only.
+
+    >>> base_instructions(False).splitlines()[1].endswith("do not read files.")
     True
     >>> "run commands there" in base_instructions(True)
+    True
+    >>> "insert_cells" in base_instructions(False)
     True
     """
     return PREAMBLE + (TOOLS if tools else NO_TOOLS) + ACTION_RULES
@@ -81,6 +87,96 @@ APP_SERVER_COMMAND = (
     "project_doc_max_bytes=0",
 )
 
+# ``dynamicTools``, ``experimentalApi`` and ``item/tool/call`` carry every cell
+# Yukti writes, and all three are experimental. The App Server drops a field it
+# does not know without a word, so a renamed field would cost the notebook its
+# tools and still look like a working turn.
+SCHEMA_COMMAND = (
+    APP_SERVER_COMMAND[0],
+    "app-server",
+    "generate-json-schema",
+    "--experimental",
+    "--out",
+)
+NEEDED_FIELDS = (
+    ("ThreadStartParams", "dynamicTools"),
+    ("InitializeCapabilities", "experimentalApi"),
+)
+TOOL_CALL_METHOD = "item/tool/call"
+
+# One entry per Codex version already checked in this kernel session.
+_VERIFIED: set[str] = set()
+
+
+def missing_protocol(client_request: Any, server_request: Any) -> list[str]:
+    """Name what Yukti sends that this Codex protocol schema does not read.
+
+    >>> missing_protocol({}, {})
+    ['dynamicTools', 'experimentalApi', 'item/tool/call']
+    >>> client = {"definitions": {
+    ...     "ThreadStartParams": {"properties": {"dynamicTools": {}}},
+    ...     "InitializeCapabilities": {"properties": {"experimentalApi": {}}}}}
+    >>> server = {"oneOf": [{"properties": {"method": {"enum": ["item/tool/call"]}}}]}
+    >>> missing_protocol(client, server)
+    []
+    """
+    definitions = client_request.get("definitions", {})
+    missing = [
+        field
+        for owner, field in NEEDED_FIELDS
+        if field not in definitions.get(owner, {}).get("properties", {})
+    ]
+    methods = {
+        method
+        for request in server_request.get("oneOf", [])
+        for method in request.get("properties", {}).get("method", {}).get("enum", [])
+    }
+    if TOOL_CALL_METHOD not in methods:
+        missing.append(TOOL_CALL_METHOD)
+    return missing
+
+
+def verify_protocol(version: str, root: Path, environment: Mapping[str, str]) -> None:
+    """Stop the turn when the installed Codex dropped a field Yukti needs.
+
+    The schema comes from the binary that is about to run, so the check
+    follows a Codex upgrade instead of trusting a pinned version number. It
+    runs once per version per kernel session, and costs about a quarter of a
+    second the first time.
+
+    Pro: a renamed experimental field is one error line, not a notebook that
+    quietly stops receiving cells.
+    Con: a Codex that cannot print its schema stops Yukti even when the fields
+    are still there.
+    """
+    if version in _VERIFIED:
+        return
+    written = root / "schema"
+    try:
+        subprocess.run(
+            SCHEMA_COMMAND + (str(written),),
+            env=dict(environment),
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+        client = json.loads((written / "ClientRequest.json").read_text())
+        server = json.loads((written / "ServerRequest.json").read_text())
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            "Yukti cannot read the Codex app-server schema, so it cannot tell "
+            f"whether {version or 'this Codex'} still accepts the notebook "
+            f"tools: {error}"
+        ) from None
+    missing = missing_protocol(client, server)
+    if missing:
+        raise RuntimeError(
+            f"{version or 'This Codex'} has no {', '.join(missing)}, so Yukti "
+            "cannot give the model its insert_cells and replace_cells tools. "
+            "Install the Codex release Yukti supports."
+        )
+    _VERIFIED.add(version)
+
 
 class AppServer:
     def __init__(
@@ -106,6 +202,7 @@ class AppServer:
 
         environment = os.environ.copy()
         environment["CODEX_HOME"] = str(self.codex_home)
+        self.environment = environment
         self.process = subprocess.Popen(
             APP_SERVER_COMMAND,
             cwd=self.workdir,
@@ -168,9 +265,19 @@ class AppServer:
             return message.get("result", {})
 
     def _initialize(self) -> None:
-        self._request(
+        started = self._request(
             "initialize",
-            {"clientInfo": {"name": "yukti", "title": "Yukti", "version": "0.0.4"}},
+            {
+                "clientInfo": {"name": "yukti", "title": "Yukti", "version": "0.0.4"},
+                # dynamicTools and item/tool/call are experimental, and the
+                # App Server hides both until a client opts in.
+                "capabilities": {"experimentalApi": True},
+            },
+        )
+        # The reply names the Codex version, which is the key the schema check
+        # remembers, so one upgrade costs one check.
+        verify_protocol(
+            str(started.get("userAgent", "")), self.codex_home.parent, self.environment
         )
         self._send({"method": "initialized", "params": {}})
         account_result = self._request("account/read", {"refreshToken": False})
@@ -192,6 +299,9 @@ class AppServer:
             "modelProvider": "openai",
             "baseInstructions": base_instructions(self.settings["tools"]),
             "developerInstructions": "",
+            # The notebook tools run in this process, not in the sandbox, so
+            # they stay available in every permission profile.
+            "dynamicTools": TOOL_SPECS,
             # project_doc_max_bytes stays 0 in every mode, so an AGENTS.md in
             # the working directory never competes with Yukti's instruction.
             "config": {
@@ -214,6 +324,7 @@ class AppServer:
         on_delta: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
         on_tool: Optional[Callable[[str], None]] = None,
+        on_action: Optional[Callable[[str, Any], str]] = None,
     ) -> str:
         request_id = self._next_request_id
         self._next_request_id += 1
@@ -236,6 +347,9 @@ class AppServer:
                 raise RuntimeError(message["error"].get("message", str(message["error"])))
             method = message.get("method")
             params = message.get("params", {})
+            if method == "item/tool/call" and "id" in message:
+                self._answer_tool(message, on_action)
+                continue
             if method in APPROVAL_METHODS and "id" in message:
                 self._send({"id": message["id"], "result": {"decision": "acceptForSession"}})
                 if on_tool is not None:
@@ -272,6 +386,31 @@ class AppServer:
                 if item.get("type") == "agentMessage":
                     return item["text"]
             raise RuntimeError("Codex completed without an answer")
+
+    def _answer_tool(
+        self, message: Mapping[str, Any], on_action: Optional[Callable[[str, Any], str]]
+    ) -> None:
+        """Run one client tool call and answer it, however it ends.
+
+        A refused call is a result, not an exception: the model reads the
+        sentence and can call again with a shape the notebook accepts.
+        """
+        params = message.get("params", {})
+        try:
+            if on_action is None:
+                raise RuntimeError("Yukti cannot change the notebook in this turn")
+            text, success = on_action(params.get("tool", ""), params.get("arguments")), True
+        except RuntimeError as error:
+            text, success = str(error), False
+        self._send(
+            {
+                "id": message["id"],
+                "result": {
+                    "success": success,
+                    "contentItems": [{"type": "inputText", "text": text}],
+                },
+            }
+        )
 
     def debug_details(self, transcript: str) -> dict[str, Any]:
         return {
