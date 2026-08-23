@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from yukti.app_server import AppServer, missing_protocol, verify_protocol
 from yukti.settings import DEFAULTS
@@ -167,3 +167,48 @@ class ThreadStartTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterruptTurnTest(unittest.TestCase):
+    """A turn that is still running is stopped before the process is killed."""
+
+    def _server(self, turn_id: str, replies: list) -> Any:
+        server = AppServer.__new__(AppServer)
+        server._next_request_id = 3
+        server.thread_id = "thread"
+        server.turn_id = turn_id
+        server.sent = []
+        server._send = server.sent.append
+        server.process = MagicMock()
+        server.process.poll.return_value = None
+        server.process.stdout.readline.side_effect = replies
+        server._selector = MagicMock()
+        server._selector.select.return_value = [object()]
+        return server
+
+    def test_an_open_turn_is_interrupted_and_awaited(self) -> None:
+        server = self._server(
+            "turn-1", ['{"method":"turn/completed","params":{}}\n']
+        )
+        server._interrupt_turn()
+        self.assertEqual(
+            server.sent,
+            [
+                {
+                    "method": "turn/interrupt",
+                    "id": 3,
+                    "params": {"threadId": "thread", "turnId": "turn-1"},
+                }
+            ],
+        )
+        self.assertEqual(server.turn_id, "")
+
+    def test_a_finished_turn_sends_nothing(self) -> None:
+        server = self._server("", [])
+        server._interrupt_turn()
+        self.assertEqual(server.sent, [])
+
+    def test_the_wait_ends_when_the_stream_closes(self) -> None:
+        server = self._server("turn-1", [""])
+        server._interrupt_turn()
+        self.assertEqual(len(server.sent), 1)

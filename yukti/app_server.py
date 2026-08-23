@@ -199,6 +199,10 @@ TOOL_CALL_METHOD = "item/tool/call"
 # One entry per Codex version already checked in this kernel session.
 _VERIFIED: set[str] = set()
 
+# Codex needs a moment to act on an interrupt, so the kill waits this long for
+# the turn to come back aborted.
+INTERRUPT_WAIT = 2.0
+
 
 def missing_protocol(client_request: Any, server_request: Any) -> list[str]:
     """Name what Yukti sends that this Codex protocol schema does not read.
@@ -314,6 +318,9 @@ class AppServer:
         self.account: dict[str, Any] = {}
         self.thread_params: dict[str, Any] = {}
         self.thread_id = ""
+        # Set while one turn is running, so close() knows there is a turn to
+        # stop and a completed turn is never interrupted.
+        self.turn_id = ""
         try:
             self._initialize()
         except Exception:
@@ -439,6 +446,8 @@ class AppServer:
                 raise RuntimeError(message["error"].get("message", str(message["error"])))
             method = message.get("method")
             params = message.get("params", {})
+            if method == "turn/started":
+                self.turn_id = str(params.get("turn", {}).get("id") or "")
             if method == "item/tool/call" and "id" in message:
                 self._answer_tool(message, on_action)
                 continue
@@ -462,11 +471,14 @@ class AppServer:
                     item.get("type") == "agentMessage"
                     and item.get("phase") in {None, "final_answer"}
                 ):
+                    # The answer is in hand, so nothing is left to interrupt.
+                    self.turn_id = ""
                     return item["text"]
             if method != "turn/completed":
                 continue
 
             turn = params["turn"]
+            self.turn_id = ""
             if turn["status"] != "completed":
                 error = turn.get("error") or {}
                 raise RuntimeError(error.get("message", f"Codex turn {turn['status']}"))
@@ -514,7 +526,51 @@ class AppServer:
             "turn/start input": [{"type": "text", "text": transcript}],
         }
 
+    def _interrupt_turn(self) -> None:
+        """Tell Codex to stop the turn that is still running, and wait for it.
+
+        Killing the process ends the turn too, but only once the stream drops,
+        so this is the one message that says stop while the model is still
+        writing. The wait is bounded, because an interrupted ``%%ask`` cell
+        reaches this from a KeyboardInterrupt and the reader is already there.
+
+        Pro: an interrupted cell stops paying for tokens it will never show.
+        Con: the interrupt costs up to ``INTERRUPT_WAIT`` seconds before the
+        process is killed.
+        """
+        if not self.turn_id or self.process.poll() is not None:
+            return
+        self._send(
+            {
+                "method": "turn/interrupt",
+                "id": self._next_request_id,
+                "params": {"threadId": self.thread_id, "turnId": self.turn_id},
+            }
+        )
+        self._next_request_id += 1
+        self.turn_id = ""
+        assert self.process.stdout
+        deadline = time.monotonic() + INTERRUPT_WAIT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self._selector.select(remaining):
+                return
+            line = self.process.stdout.readline()
+            if not line:
+                return
+            try:
+                if json.loads(line).get("method") == "turn/completed":
+                    return
+            except json.JSONDecodeError:
+                continue
+
     def close(self) -> None:
+        # The kill must happen whatever the interrupt does, so a second Ctrl+C
+        # during the wait cannot leave a Codex process behind.
+        try:
+            self._interrupt_turn()
+        except BaseException:
+            pass
         self._selector.close()
         if self.process.poll() is None:
             self.process.terminate()
