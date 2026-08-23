@@ -40,10 +40,15 @@ GATES   := guard test build check verify
 # Isolated, so the recipe ignores whatever the active environment holds.
 TWINE := uvx twine
 SUB   := $(MAKE) --no-print-directory
+# macOS Finder drops a .DS_Store back into a directory while `rm -rf` walks it,
+# so the first pass can fail with "Directory not empty". Retry, then warn.
+# Removing scratch files must never fail a release whose checks already passed.
+SCRUB = rm -rf $(1) 2>/dev/null || rm -rf $(1) 2>/dev/null \
+	|| echo 'warn: could not remove $(1); `make clean` will retry'
 
 SHELL := /bin/bash
 .NOTPARALLEL:
-.PHONY: help commit bump clean guard test build check verify tag publish push dry ship release
+.PHONY: help bump stage clean guard test build check verify tag publish push dry ship release
 
 help:  ## show this help
 	@printf '\n  %s %s  ->  %s\n\n' "$(DIST)" "$(VERSION)" "$(REPO)"
@@ -52,27 +57,30 @@ help:  ## show this help
 	@printf '\n  knobs: PART=%s REPO=%s MSG=%s YES=%s\n' "$(PART)" "$(REPO)" "$(MSG)" "$(YES)"
 	@printf '  usage: make release PART=minor MSG="what you changed"\n\n'
 
-commit:  ## commit your work; needs MSG when the tree is dirty
-	@if [ -z "$$(git status --porcelain)" ]; then \
-		echo 'commit: tree already clean'; \
-	elif [ -n "$(MSG)" ]; then \
-		git add -A && git commit -q -m "$(MSG)" && echo 'commit: $(MSG)'; \
-	else \
-		echo 'commit: the tree is dirty, and I will not guess a message.'; \
+bump:  ## write the new version to the files, no git (PART=patch/minor/major/none)
+	@if [ '$(PART)' = none ]; then echo 'bump: skipped, staying on $(VERSION)'; exit 0; fi; \
+	uv version --no-sync --bump $(PART) \
+		&& npm version "$$(uv version --short)" --no-git-tag-version --allow-same-version >/dev/null \
+		&& echo "bump: $(VERSION) -> $$(uv version --short)"
+
+# One commit, not two. The bump lands inside the commit that describes the work,
+# because the tag is already the release marker and does not need a second one.
+stage:  ## bump, then commit the work and the bump together
+	@if [ -n "$$(git status --porcelain)" ] && [ -z '$(MSG)' ]; then \
+		echo 'stage: the tree is dirty, and I will not guess a message.'; \
 		echo '  commit it yourself, or re-run with MSG="what you changed"'; \
 		exit 1; \
 	fi
-
-bump:  ## raise the version and commit it (PART=patch/minor/major/none)
-	@if [ '$(PART)' = none ]; then echo 'bump: skipped, shipping $(VERSION)'; exit 0; fi; \
-	uv version --no-sync --bump $(PART) \
-		&& npm version "$$(uv version --short)" --no-git-tag-version --allow-same-version >/dev/null \
-		&& git add $(VFILES) \
-		&& git commit -q -m "release v$$(uv version --short)" \
-		&& echo "bump: $(VERSION) -> $$(uv version --short)"
+	@$(SUB) bump
+	@M='$(MSG)'; M="$${M:-release v$$(uv version --short)}"; \
+	if [ -n "$$(git status --porcelain)" ]; then \
+		git add -A && git commit -q -m "$$M" && echo "stage: committed \"$$M\""; \
+	else \
+		echo 'stage: nothing to commit'; \
+	fi
 
 clean:  ## delete every build output
-	rm -rf dist build *.egg-info $(RELENV)
+	@$(call SCRUB,dist build *.egg-info $(RELENV))
 	npm run clean
 
 guard:  ## refuse a release that cannot succeed
@@ -100,7 +108,7 @@ verify:  ## install the wheel in a throwaway env and prove it loads
 	uv pip install -q --python $(RELENV)/bin/python "jupyterlab>=4,<5" $(WHL)
 	$(RELENV)/bin/python -c 'import yukti; print("import ok:", yukti.__version__)'
 	$(RELENV)/bin/jupyter labextension list 2>&1 | grep -E '$(EXT).*enabled.*OK'
-	rm -rf $(RELENV)
+	@$(call SCRUB,$(RELENV))
 
 tag:  ## create the annotated tag, locally only
 	git tag -a $(TAG) -m "$(DIST) $(VERSION)"
@@ -125,9 +133,8 @@ dry: $(GATES)  ## run every check, ship nothing
 ship: $(GATES) tag publish push  ## gates, tag, publish, push -- no bump
 	@printf 'released %s %s to %s\n' "$(DIST)" "$(VERSION)" "$(REPO)"
 
-# Three sub-makes, because make reads the version once per run. `ship` must
-# start after `bump` has written the new one.
-release:  ## commit, bump, then ship
-	@$(SUB) commit
-	@$(SUB) bump
+# Two sub-makes, because make reads the version once per run. `ship` must start
+# after `stage` has written and committed the new one.
+release:  ## stage then ship, in one commit
+	@$(SUB) stage
 	@$(SUB) ship

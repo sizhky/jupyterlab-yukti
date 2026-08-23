@@ -1,6 +1,6 @@
 {
   "name": "yukti",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Send the visible notebook prefix to the Yukti IPython magic",
   "license": "BSD-3-Clause",
   "main": "yukti_frontend/lib/index.js",

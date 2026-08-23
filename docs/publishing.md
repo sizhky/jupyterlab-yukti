@@ -30,8 +30,8 @@ One command:
 make release PART=minor MSG="what you changed"
 ```
 
-It commits your work, raises the version, runs every gate, then publishes and
-pushes. `PART` is `patch`, `minor`, `major`, or `none`. `none` ships the current
+It raises the version, commits that together with your work as **one** commit,
+runs every gate, then publishes and pushes. `PART` is `patch`, `minor`, `major`, or `none`. `none` ships the current
 version without raising it, which is what a first release wants.
 
 `MSG` is the opt-in for `git add -A`. Leave it out and the recipe refuses:
@@ -52,14 +52,26 @@ Check first, ship nothing:
 make dry
 ```
 
+### One commit, not two
+
+`stage` bumps the version and then makes a single commit holding both your work
+and the bump. Tools like `npm version` and `cargo release` make a separate
+`release vX.Y.Z` commit, but they split for a reason that does not apply here: a
+bot bumps the version after the feature branch has already merged. Releasing
+from your own machine has no such order. The tag is already the release marker,
+so a marker commit only doubles the graph.
+
+When the tree is clean, there is nothing of yours to describe, so the message
+defaults to `release vX.Y.Z` and `MSG` is not needed.
+
 ## The recipe
 
 Run `make` with no target to see this list.
 
 | Step      | Action                                                        |
 | --------- | ------------------------------------------------------------- |
-| `commit`  | Commit your work. Needs `MSG` when the tree is dirty.         |
-| `bump`    | Raise the version in `pyproject.toml`, `uv.lock`, `package.json`, then commit that alone. |
+| `bump`    | Write the new version to `pyproject.toml`, `uv.lock`, `package.json`. No git. |
+| `stage`   | Bump, then commit your work and the bump as **one** commit. Needs `MSG` when the tree is dirty. |
 | `clean`   | Delete every build output.                                    |
 | `guard`   | Refuse a dirty tree, a version mismatch, or a used tag.       |
 | `test`    | Run the fast test suite.                                      |
@@ -71,7 +83,7 @@ Run `make` with no target to see this list.
 | `push`    | Push the branch and the tag in one atomic step.               |
 | `dry`     | `guard test build check verify`. Ships nothing.               |
 | `ship`    | `dry` plus `tag publish push`. No bump.                       |
-| `release` | `commit`, `bump`, then `ship`.                                |
+| `release` | `stage`, then `ship`.                                         |
 
 Four knobs, no flags:
 
@@ -82,8 +94,8 @@ Four knobs, no flags:
 
 Every step runs alone. `make build verify` is the useful pair while developing.
 
-`release` re-enters `make` three times, once per stage. Make reads the version
-when it starts, so `ship` has to begin after `bump` has written the new one.
+`release` re-enters `make` twice. Make reads the version when it starts, so
+`ship` has to begin after `stage` has written the new one.
 
 ## Why this order
 
@@ -105,15 +117,15 @@ and deleting a public tag is worse than pushing one late.
 
 ## First release
 
-`0.0.4` has never reached PyPI, and the name `jupyterlab-yukti` is free, so ship
-the current version rather than raising it:
+Nothing has reached PyPI yet, and the name `jupyterlab-yukti` is free, so ship
+the version already in the tree rather than raising it again:
 
 ```
-make release PART=none MSG="add the release recipe"
+make release PART=none MSG="what you changed"
 ```
 
-The remote `sizhky/jupyterlab-yukti` is empty until this runs. `release` pushes
-the branch and the tag together at the end, which fills it.
+The remote `sizhky/jupyterlab-yukti` stays empty until this runs. `release`
+pushes the branch and the tag together at the end, which fills it.
 
 A TestPyPI rehearsal is the textbook advice, and it needs a `[testpypi]` section
 in `~/.pypirc` that you do not have yet:
@@ -126,6 +138,40 @@ make publish REPO=testpypi
 Skip it if you want. Its value here is small, because `verify` already installs
 the real wheel in a clean environment and reads back `enabled OK`, and
 `twine check --strict` already validated how the README will render.
+
+## When a step fails
+
+Read which step failed, then resume from there. Nothing reaches PyPI before
+`publish`, so any earlier failure is safe.
+
+Once `stage` has run, the new version is committed. Do **not** re-run `release`
+with a `PART`, or you will skip a version number for no reason. Resume with
+`ship`, which runs every gate and then publishes without bumping:
+
+```
+make ship
+```
+
+If the failure left the tree dirty, `release` with `PART=none` does the same
+thing and commits the fix on the way through:
+
+```
+make release PART=none MSG="fix the thing that failed"
+```
+
+This split is the reason `ship` exists apart from `release`.
+
+### Cleanup never fails a release
+
+`verify` builds a throwaway environment and deletes it afterwards. On macOS,
+Finder writes a `.DS_Store` back into a directory while `rm -rf` is walking it,
+so the delete can fail with `Directory not empty` even though every check
+passed. Deleting scratch files is hygiene, not a gate, so it retries once and
+then warns:
+
+```
+warn: could not remove .venv-release; `make clean` will retry
+```
 
 ## Packaging changes made for this
 
