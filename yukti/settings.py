@@ -69,6 +69,37 @@ def _shown(value: Any) -> str:
     return str(value) or "disposable"
 
 
+def summary(current: Mapping[str, Any]) -> str:
+    """Render the settings in force as a Markdown table.
+
+    ``KEY_HELP`` fixes the order, so a key appears here the day it is
+    documented, and the reader sees words instead of the JSON payload.
+
+    Pro: the echo of a ``%%yukti`` cell reads like the help table above it.
+    Con: a machine reader of the cell output must parse Markdown.
+
+    >>> "| `sandbox` | read-only |" in summary(DEFAULTS)
+    True
+    >>> "| `network` | off |" in summary(DEFAULTS)
+    True
+    """
+    rows = [
+        f"| `{key}` | {_shown(current.get(key, DEFAULTS.get(key, '')))} |"
+        for key in KEY_HELP
+    ]
+    return "\n".join(
+        [
+            "**Yukti** — every later `%%ask` cell is now going to run with:",
+            "",
+            "| setting | value |",
+            "| --- | --- |",
+            *rows,
+            "",
+            "Write `%%yukti` alone for the full vocabulary.",
+        ]
+    )
+
+
 def help_text(current: Mapping[str, Any]) -> str:
     """Render the vocabulary and the settings in force as Markdown.
 

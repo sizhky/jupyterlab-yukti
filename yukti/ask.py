@@ -20,7 +20,7 @@ from IPython.display import HTML, Markdown, display
 from .app_server import AppServer
 from .comm import NotebookPrefixCache, register_prefix_comm
 from .context import build_transcript
-from .settings import DEFAULTS, help_text, parse_settings
+from .settings import DEFAULTS, help_text, parse_settings, summary
 from .stream import Action, ActionStream
 from .trace import Trace
 
@@ -97,7 +97,7 @@ class YuktiMagics(Magics):
             self.settings = parse_settings(cell, self.settings)
         except ValueError as error:
             raise UsageError(str(error)) from None
-        return DebugPayload(self.settings)
+        return Markdown(summary(self.settings))
 
     @cell_magic
     def ask(self, line: str, cell: str) -> Any:
