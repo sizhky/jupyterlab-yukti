@@ -45,6 +45,48 @@ empty working directory, a read-only sandbox, and no project instruction files.
 Yukti accepts only ChatGPT subscription authentication. It stops before the model
 call when Codex reports API-key authentication.
 
+## Change what `%%ask` may do
+
+By default Codex only reads the transcript. A `%%yukti` cell raises that limit
+for every later `%%ask` cell in the same kernel session:
+
+```python
+%%yukti
+permissions: elevated
+```
+
+The cell prints the settings it applied. An empty `%%yukti` cell, or `%yukti`,
+prints the help with the settings in force. Three profiles set them together:
+
+| Profile | Sandbox | Working directory | Network | Tools |
+| --- | --- | --- | --- | --- |
+| `sandboxed` (default) | `read-only` | disposable temp directory | off | no |
+| `elevated` | `workspace-write` | the kernel's directory | off | yes |
+| `full` | `danger-full-access` | the kernel's directory | on | yes |
+
+Any line after `permissions` overrides one value:
+
+```python
+%%yukti
+permissions: elevated
+cwd: ~/Code/report
+writable_roots: /tmp/scratch
+network: on
+approvals: auto_review
+```
+
+- `sandbox`: `read-only`, `workspace-write`, or `danger-full-access`
+- `cwd`: the directory Codex works in, or empty for a disposable one
+- `network`, `tools`: `on` or `off`
+- `writable_roots`: extra writable directories, separated by commas
+- `approvals`: `never`, or `auto_review` to let a Codex subagent decide
+
+With `elevated` or `full`, Codex may edit files and run commands. Yukti prints
+one line per command and per file it changes. A notebook cannot show an approval
+prompt, so Yukti accepts any approval request that still reaches it: the sandbox
+and the working directory remain the real limits. Project instruction files stay
+off in every profile, so an `AGENTS.md` never competes with Yukti's instruction.
+
 ## See the exact Codex request
 
 Add `--debug` to show the authentication type, base instruction, thread settings,

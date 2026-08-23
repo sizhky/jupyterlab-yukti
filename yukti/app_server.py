@@ -4,11 +4,18 @@ import selectors
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
+
+from .settings import APPROVAL_PARAMS, DEFAULTS
 
 
-BASE_INSTRUCTIONS = """You are Yukti. Answer the final [user] question using only
-the notebook transcript in the user message. Do not call tools.
+PREAMBLE = """You are Yukti. Answer the final [user] question using the notebook
+transcript in the user message. """
+NO_TOOLS = "Use only that transcript. Do not call tools."
+TOOLS = """You may also read and change files under the working
+directory and run commands there. Say in your streamed messages what you
+changed on disk."""
+ACTION_RULES = """
 
 Stream non-action messages as Markdown text. Before every action, stream one short
 message that explains the cell you are about to create or change. Never emit two
@@ -23,6 +30,49 @@ requested by the user has been inserted. For questions, return only Markdown.
 Use markdown for prose, formulas, and documentation. Use code for executable source.
 Write inline formulas as $...$ and display formulas as $$...$$.
 Use transcript cell_id values for replace_cells. Do not use Markdown fences."""
+
+
+def base_instructions(tools: bool) -> str:
+    """Yukti's own instruction, with or without permission to use tools.
+
+    >>> base_instructions(False).splitlines()[1].endswith("Do not call tools.")
+    True
+    >>> "run commands there" in base_instructions(True)
+    True
+    """
+    return PREAMBLE + (TOOLS if tools else NO_TOOLS) + ACTION_RULES
+
+
+# Approval requests reach Yukti only when ``%%yukti`` routes approvals away
+# from ``never``. Nothing in a notebook can prompt, so Yukti accepts them and
+# shows the line it accepted.
+# Pro: the turn never stalls behind a prompt nobody can answer.
+# Con: the acceptance is automatic, so the sandbox stays the real limit.
+APPROVAL_METHODS = (
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+)
+
+
+def tool_line(item: Mapping[str, Any]) -> str:
+    """Describe one tool item in a single line, or return "" for other items.
+
+    >>> tool_line({"type": "commandExecution", "command": "pytest -q"})
+    '$ pytest -q'
+    >>> tool_line({"type": "fileChange", "changes": [{"path": "/repo/ask.py"}]})
+    'edit ask.py'
+    >>> tool_line({"type": "agentMessage", "text": "hello"})
+    ''
+    """
+    kind = item.get("type")
+    if kind == "commandExecution":
+        return f"$ {str(item.get('command', '')).strip()}"
+    if kind == "fileChange":
+        changed = [Path(str(one.get("path", ""))).name for one in item.get("changes", [])]
+        return f"edit {', '.join(changed)}"
+    return ""
+
+
 APP_SERVER_COMMAND = (
     "codex",
     "app-server",
@@ -33,12 +83,25 @@ APP_SERVER_COMMAND = (
 
 
 class AppServer:
-    def __init__(self, root: str, timeout: int = 300) -> None:
+    def __init__(
+        self,
+        root: str,
+        settings: Mapping[str, Any] = DEFAULTS,
+        timeout: int = 300,
+    ) -> None:
         root_path = Path(root)
-        self.workdir = root_path / "work"
+        self.settings = dict(settings)
         self.codex_home = root_path / "codex-home"
-        self.workdir.mkdir()
         self.codex_home.mkdir()
+        # An empty cwd setting keeps the disposable directory, so the default
+        # thread still cannot see the notebook's files.
+        self.workdir = root_path / "work"
+        if self.settings["cwd"]:
+            self.workdir = Path(self.settings["cwd"]).expanduser().resolve()
+            if not self.workdir.is_dir():
+                raise RuntimeError(f"Yukti cannot use cwd {self.workdir}: no directory")
+        else:
+            self.workdir.mkdir()
         self._link_auth_cache()
 
         environment = os.environ.copy()
@@ -117,15 +180,27 @@ class AppServer:
                 "Yukti requires Codex to be logged in with ChatGPT subscription authentication"
             )
 
+        roots = [
+            str(Path(root).expanduser().resolve())
+            for root in self.settings["writable_roots"]
+        ]
         self.thread_params = {
             "ephemeral": True,
             "cwd": str(self.workdir),
-            "approvalPolicy": "never",
-            "sandbox": "read-only",
+            **APPROVAL_PARAMS[self.settings["approvals"]],
+            "sandbox": self.settings["sandbox"],
             "modelProvider": "openai",
-            "baseInstructions": BASE_INSTRUCTIONS,
+            "baseInstructions": base_instructions(self.settings["tools"]),
             "developerInstructions": "",
-            "config": {"project_doc_max_bytes": 0},
+            # project_doc_max_bytes stays 0 in every mode, so an AGENTS.md in
+            # the working directory never competes with Yukti's instruction.
+            "config": {
+                "project_doc_max_bytes": 0,
+                "sandbox_workspace_write": {
+                    "network_access": self.settings["network"],
+                    "writable_roots": roots,
+                },
+            },
         }
         result = self._request("thread/start", self.thread_params)
         sources = result.get("instructionSources", [])
@@ -138,6 +213,7 @@ class AppServer:
         transcript: str,
         on_delta: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
+        on_tool: Optional[Callable[[str], None]] = None,
     ) -> str:
         request_id = self._next_request_id
         self._next_request_id += 1
@@ -160,6 +236,15 @@ class AppServer:
                 raise RuntimeError(message["error"].get("message", str(message["error"])))
             method = message.get("method")
             params = message.get("params", {})
+            if method in APPROVAL_METHODS and "id" in message:
+                self._send({"id": message["id"], "result": {"decision": "acceptForSession"}})
+                if on_tool is not None:
+                    on_tool("approved automatically")
+                continue
+            if method == "item/started" and on_tool is not None:
+                line = tool_line(params.get("item", {}))
+                if line:
+                    on_tool(line)
             if method == "item/agentMessage/delta":
                 delta = params["delta"]
                 deltas.append(delta)
@@ -191,6 +276,7 @@ class AppServer:
     def debug_details(self, transcript: str) -> dict[str, Any]:
         return {
             "command": list(APP_SERVER_COMMAND),
+            "settings": self.settings,
             "authentication": {
                 "type": self.account.get("type"),
                 "planType": self.account.get("planType"),

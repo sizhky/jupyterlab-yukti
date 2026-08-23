@@ -59,7 +59,7 @@ def test_ask_sends_each_completed_action_during_generation():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event):
+    def run(_transcript, on_delta, on_event, on_tool):
         on_delta(json.dumps(plan) + "\n")
         assert comm.send.call_count == 1
         on_delta(json.dumps(first) + "\n")
@@ -107,7 +107,7 @@ def test_each_message_block_renders_into_its_own_output():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event):
+    def run(_transcript, on_delta, on_event, on_tool):
         on_delta("Naive recursion.\n%%action\n" + json.dumps(insert) + "\n")
         on_delta("Memoised version.")
         return ""
