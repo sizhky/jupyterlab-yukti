@@ -82,6 +82,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         .map(widget => serializeCell(widget.model.id, widget.model.toJSON()));
       const requestId = `${cell.model.id}:${Date.now()}`;
       const comm = kernel.createComm(COMM_TARGET);
+      let lastInsertedCellId: string | undefined;
       comm.onMsg = message => {
         const data = message.content.data;
         if (
@@ -114,10 +115,18 @@ const plugin: JupyterFrontEndPlugin<void> = {
           if (inserted.length === 0 || inserted.some(cell => cell == null)) {
             return;
           }
+          const previousIndex = notebook.model.sharedModel.cells.findIndex(
+            sharedCell => sharedCell.id === lastInsertedCellId
+          );
+          const insertionIndex = previousIndex < 0
+            ? currentIndex + 1
+            : previousIndex + 1;
           notebook.model.sharedModel.transact(() => {
-            inserted.forEach((newCell, offset) => {
-              notebook.model!.sharedModel.insertCell(currentIndex + offset + 1, newCell!);
-            });
+            const newCells = notebook.model!.sharedModel.insertCells(
+              insertionIndex,
+              inserted.map(newCell => newCell!)
+            );
+            lastInsertedCellId = newCells.at(-1)!.id;
           });
           notebook.activeCellIndex = currentIndex + 1;
           return;

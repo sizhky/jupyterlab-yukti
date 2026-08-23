@@ -1,6 +1,8 @@
 import html
 import json
 import tempfile
+import time
+from pathlib import Path
 from typing import Any
 
 from IPython.core.error import UsageError
@@ -22,19 +24,6 @@ SPINNER = HTML(
     "@media(prefers-reduced-motion:reduce){.yukti-spinner{animation:none}}"
     "</style>"
 )
-ACTION_REQUEST = """
-[response action]
-Return only one JSON action using one of these shapes:
-{"type":"answer","source":"<markdown answer>"}
-{"type":"insert_cells","cells":[{"cell_type":"code|markdown","source":"<complete source>"}]}
-{"type":"replace_cells","cells":[{"cell_id":"<id>","source":"<complete source>"}]}
-Use answer for a question, insert_cells for new notebook content, and
-replace_cells for changes to earlier cells.
-Use markdown for prose, formulas, and documentation. Use code for executable source.
-Use only cell_id values present in the transcript. Do not use Markdown fences.
-"""
-
-
 def parse_edit(answer: str, cells: list[dict[str, Any]]) -> dict[str, Any]:
     action = json.loads(answer)
     if isinstance(action, dict) and action.get("type") == "answer":
@@ -48,7 +37,7 @@ def parse_edit(answer: str, cells: list[dict[str, Any]]) -> dict[str, Any]:
             and cell.get("cell_type") in {"code", "markdown"}
             and isinstance(cell.get("source"), str)
             for cell in inserted
-        ):
+        ) and set(action) == {"type", "cells"}:
             return action
     if isinstance(action, dict) and action.get("type") == "replace_cells":
         replacements = action.get("cells")
@@ -92,25 +81,115 @@ class YuktiMagics(Magics):
     @cell_magic
     def ask(self, line: str, cell: str) -> Any:
         option = line.strip()
-        if option not in {"", "--debug"}:
-            raise UsageError("%%ask accepts only --debug")
+        if option not in {"", "--debug", "--trace"}:
+            raise UsageError("%%ask accepts only --debug or --trace")
 
         request_id, cells, comm = self.prefixes.take()
         transcript = build_transcript(cells, cell)
+        trace_path = None
+        trace_file = None
+        if option == "--trace":
+            trace_dir = Path.home() / ".cache" / "yukti" / "traces"
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = trace_dir / f"{time.time_ns()}.jsonl"
+            trace_file = trace_path.open("w", encoding="utf-8")
+
+        def trace(kind: str, payload: Any) -> None:
+            if trace_file is None:
+                return
+            trace_file.write(
+                json.dumps({"kind": kind, "payload": payload}, default=str) + "\n"
+            )
+            trace_file.flush()
+
         with tempfile.TemporaryDirectory(prefix="yukti-") as root:
             with AppServer(root) as server:
                 if option == "--debug":
                     comm.close()
                     return DebugPayload(server.debug_details(transcript))
 
-                handle = display(SPINNER, display_id=True)
+                trace(
+                    "input",
+                    {
+                        "question": cell,
+                        "context": cells,
+                        "system_prompt": server.thread_params["baseInstructions"],
+                    },
+                )
+
+                handle = display(Markdown(""), display_id=True)
+                spinner = display(SPINNER, display_id=True)
                 try:
-                    action = parse_edit(server.run(transcript + ACTION_REQUEST), cells)
-                    if action["type"] == "answer":
-                        handle.update(Markdown(action["source"]))
-                    else:
+                    marker = "\n%%action\n"
+                    response = ""
+                    pending = ""
+                    in_action = False
+                    received_delta = False
+
+                    def send(answer: str) -> None:
+                        action = parse_edit(answer, cells)
+                        trace("notebook_send", action)
                         comm.send({**action, "request_id": request_id})
-                        handle.update(Markdown(f"Updated {len(action['cells'])} cell(s)."))
+
+                    def on_delta(delta: str) -> None:
+                        nonlocal pending, received_delta, response, in_action
+                        received_delta = True
+                        pending += delta
+                        while True:
+                            if in_action:
+                                if "\n" not in pending:
+                                    return
+                                answer, pending = pending.split("\n", 1)
+                                if answer.strip():
+                                    send(answer)
+                                trace("parser", {"from": "action", "to": "message"})
+                                response = ""
+                                in_action = False
+                                continue
+                            if marker in pending:
+                                visible, pending = pending.split(marker, 1)
+                                response += visible
+                                handle.update(Markdown(response))
+                                trace("parser", {"from": "message", "to": "action"})
+                                in_action = True
+                                continue
+                            implicit_action = pending.find("\n{")
+                            if pending.lstrip().startswith("{"):
+                                pending = pending.lstrip()
+                                trace("parser", {"from": "message", "to": "action"})
+                                in_action = True
+                                continue
+                            if implicit_action >= 0:
+                                response += pending[:implicit_action]
+                                pending = pending[implicit_action + 1:]
+                                handle.update(Markdown(response))
+                                trace("parser", {"from": "message", "to": "action"})
+                                in_action = True
+                                continue
+                            visible = max(0, len(pending) - len(marker) + 1)
+                            response += pending[:visible]
+                            pending = pending[visible:]
+                            if visible:
+                                handle.update(Markdown(response))
+                                return
+                            return
+
+                    answer = server.run(
+                        transcript,
+                        on_delta=on_delta,
+                        on_event=lambda event: trace("codex_event", event),
+                    )
+                    if not received_delta:
+                        on_delta(answer)
+                    if in_action and pending.strip():
+                        send(pending)
+                    elif not in_action:
+                        response += pending
+                        handle.update(Markdown(response))
                 finally:
+                    spinner.update(HTML(""))
                     comm.close()
+                    if trace_file is not None:
+                        trace_file.close()
+                        display(Markdown(f"Trace: `{trace_path}`"))
                 return None

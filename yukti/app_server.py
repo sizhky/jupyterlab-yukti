@@ -7,11 +7,22 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
-BASE_INSTRUCTIONS = (
-    "You are Yukti. Answer the final [user] question using only the notebook "
-    "transcript in the user message. Do not call tools. "
-    "Return only the JSON action requested at the end of the transcript."
-)
+BASE_INSTRUCTIONS = """You are Yukti. Answer the final [user] question using only
+the notebook transcript in the user message. Do not call tools.
+
+Stream non-action messages as Markdown text. Before every action, stream one short
+message that explains the cell you are about to create or change. Never emit two
+actions without a message between them. After the final action, stream a short
+completion message. End each action message with a line containing only %%action,
+then write one complete JSON action on one line using one of these shapes:
+{"type":"insert_cells","cells":[{"cell_type":"code|markdown","source":"<complete source>"}]}
+{"type":"replace_cells","cells":[{"cell_id":"<id>","source":"<complete source>"}]}
+After the JSON line, continue streaming Markdown or start the next %%action.
+Each insert_cells action must contain exactly one cell. Continue until every cell
+requested by the user has been inserted. For questions, return only Markdown.
+Use markdown for prose, formulas, and documentation. Use code for executable source.
+Write inline formulas as $...$ and display formulas as $$...$$.
+Use transcript cell_id values for replace_cells. Do not use Markdown fences."""
 APP_SERVER_COMMAND = (
     "codex",
     "app-server",
@@ -126,6 +137,7 @@ class AppServer:
         self,
         transcript: str,
         on_delta: Optional[Callable[[str], None]] = None,
+        on_event: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> str:
         request_id = self._next_request_id
         self._next_request_id += 1
@@ -142,6 +154,8 @@ class AppServer:
         deltas: list[str] = []
         while True:
             message = self._read()
+            if on_event is not None:
+                on_event(message)
             if message.get("id") == request_id and "error" in message:
                 raise RuntimeError(message["error"].get("message", str(message["error"])))
             method = message.get("method")
@@ -153,6 +167,8 @@ class AppServer:
                     on_delta(delta)
             if method == "item/completed":
                 item = params.get("item", {})
+                if item.get("type") == "agentMessage" and on_delta is not None:
+                    on_delta("\n")
                 if (
                     item.get("type") == "agentMessage"
                     and item.get("phase") in {None, "final_answer"}
