@@ -24,8 +24,10 @@ Change the notebook only by calling insert_cells and replace_cells. Never write
 an action as text, and never ask the user to paste a cell.
 Stream your messages as Markdown text. Before every call, stream one short
 message that explains the cell you are about to create or change. Never make two
-calls without a message between them. After the last call, stream a short
-completion message. Each insert_cells call must carry exactly one cell.
+calls without a message between them. A call is finished when it returns, so
+never stream a message about waiting for a cell, or about checking whether one
+arrived. After the last call, stream a short completion message. Each
+insert_cells call must carry exactly one cell.
 Continue until every cell the user asked for exists. For a question, answer in
 Markdown and call nothing.
 Use markdown cells for prose, formulas, and documentation. Use code cells for
@@ -73,17 +75,44 @@ APPROVAL = "approval"
 # summary both live at the end of an output.
 OUTPUT_TAIL = 2000
 
+# One shell command can be longer than the cell is wide, and a wrapped summary
+# costs the reader the shape of the turn. ``tool_detail`` keeps every character,
+# so the summary only has to say which call this is.
+SUMMARY_WIDTH = 80
+
+
+def summary_line(line: str) -> str:
+    """Cut one summary line to ``SUMMARY_WIDTH``, and mark what it dropped.
+
+    Pro: every call stays one line, whatever the model ran.
+    Con: two long commands that differ late read as the same summary, so the
+    reader must open the block to tell them apart.
+
+    >>> summary_line("$ pytest -q")
+    '$ pytest -q'
+    >>> len(summary_line("$ " + "a" * 200))
+    80
+    >>> summary_line("$ " + "a" * 200).endswith("…")
+    True
+    """
+    if len(line) <= SUMMARY_WIDTH:
+        return line
+    return line[: SUMMARY_WIDTH - 1].rstrip() + "…"
+
 
 def tool_line(item: Mapping[str, Any]) -> str:
     """Describe one tool item in a single line, or return "" for other items.
 
     A summary must stay one line, so a command that spans several lines keeps
-    its first line and ``tool_detail`` holds the whole of it.
+    its first line, a long line is cut, and ``tool_detail`` holds the whole of
+    it either way.
 
     >>> tool_line({"type": "commandExecution", "command": "pytest -q"})
     '$ pytest -q'
     >>> tool_line({"type": "commandExecution", "command": "cd yukti\\npytest -q"})
     '$ cd yukti …'
+    >>> tool_line({"type": "commandExecution", "command": "ls " + "long/" * 40})
+    '$ ls long/long/long/long/long/long/long/long/long/long/long/long/long/long/long…'
     >>> tool_line({"type": "fileChange", "changes": [{"path": "/repo/ask.py"}]})
     'edit ask.py'
     >>> tool_line({"type": "approval"})
@@ -96,10 +125,10 @@ def tool_line(item: Mapping[str, Any]) -> str:
         return "approved automatically"
     if kind == "commandExecution":
         written = str(item.get("command", "")).strip().splitlines() or [""]
-        return f"$ {written[0]}" + (" …" if len(written) > 1 else "")
+        return summary_line(f"$ {written[0]}" + (" …" if len(written) > 1 else ""))
     if kind == "fileChange":
         changed = [Path(str(one.get("path", ""))).name for one in item.get("changes", [])]
-        return f"edit {', '.join(changed)}"
+        return summary_line(f"edit {', '.join(changed)}")
     return ""
 
 

@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "title": "Yukti Cell Copy",
+  "description": "Copy buttons for the cell toolbar.",
+  "jupyter.lab.toolbars": {
+    "Cell": [
+      {
+        "name": "yukti-copy-input",
+        "command": "yukti:copy-input",
+        "rank": 60
+      },
+      {
+        "name": "yukti-copy-output",
+        "command": "yukti:copy-output",
+        "rank": 61
+      },
+      {
+        "name": "yukti-copy-both",
+        "command": "yukti:copy-both",
+        "rank": 62
+      }
+    ]
+  },
+  "properties": {},
+  "additionalProperties": false,
+  "type": "object"
+}

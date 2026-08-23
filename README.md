@@ -99,6 +99,27 @@ Why did the previous query return these rows?
 
 Debug mode starts the local App Server protocol and stops before the model turn.
 
+## Copy a cell
+
+Click a cell. Three buttons join the cell toolbar above it. Each button shows
+the cell as two bars, and the solid bar marks the part it copies:
+
+- top bar solid: the source
+- bottom bar solid: the output text
+- both bars solid: the source, then the output
+
+Every button wraps what it copies in a code fence, and the source fence carries
+the kernel's language. A cell without output copies nothing for the middle
+button.
+
+The three buttons also appear in the command palette as `Copy Input`,
+`Copy Output`, and `Copy Input and Output`, so you can bind a keyboard shortcut
+to each one. The buttons follow the active cell, because JupyterLab keeps one
+cell toolbar and moves it to the cell you click.
+
+Copied output holds the same text that `%%ask` sends to Codex, so a rich output
+such as a DataFrame arrives as its plain-text form.
+
 ## Verify the installation
 
 ```bash

@@ -60,7 +60,7 @@ def test_ask_sends_each_tool_call_to_the_notebook():
     def run(_transcript, on_delta, on_event, on_tool, on_action):
         on_delta("The slow one first.")
         result = on_action("insert_cells", {"cells": first["cells"]})
-        assert result == "sent to the notebook: insert 1 cell"
+        assert result == "insert 1 cell: finished"
         assert comm.send.call_count == 1
         on_delta("Now the fast one.")
         on_action("insert_cells", {"cells": second["cells"]})

@@ -1,8 +1,10 @@
 import type { JupyterFrontEndPlugin } from '@jupyterlab/application';
+import { Clipboard } from '@jupyterlab/apputils';
 import type { ICellModel } from '@jupyterlab/cells';
 import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
 import {
   type ICell,
+  type ILanguageInfoMetadata,
   type IOutput,
   isCode,
   isDisplayData,
@@ -10,6 +12,7 @@ import {
   isExecuteResult,
   isStream
 } from '@jupyterlab/nbformat';
+import { LabIcon } from '@jupyterlab/ui-components';
 import {
   INotebookTracker,
   NotebookActions,
@@ -257,4 +260,122 @@ const plainTextPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-export default [plugin, plainTextPlugin];
+type CopyPart = 'input' | 'output' | 'both';
+
+const COPY_COMMANDS: { id: string; label: string; part: CopyPart }[] = [
+  { id: 'yukti:copy-input', label: 'Copy Input', part: 'input' },
+  { id: 'yukti:copy-output', label: 'Copy Output', part: 'output' },
+  { id: 'yukti:copy-both', label: 'Copy Input and Output', part: 'both' }
+];
+
+/**
+ * Wrap a block in a code fence.
+ *
+ * The fence grows past the longest backtick run inside the block, which
+ * CommonMark allows, so a copied ``%%ask`` answer that holds its own fences
+ * still pastes as one block.
+ *
+ * Pro: three backticks stay the common case, so an ordinary paste looks normal.
+ * Con: a reader that predates CommonMark sees the longer fence as literal text.
+ */
+function fence(body: string, language: string): string {
+  const runs = body.match(/`+/g) ?? [];
+  const ticks = '`'.repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+  return `${ticks}${language}\n${body}\n${ticks}`;
+}
+
+/**
+ * Render one cell as clipboard text.
+ *
+ * Every part arrives inside a code fence, so a paste keeps the cell's shape in
+ * every markdown reader. An empty output leaves the source fence alone.
+ *
+ * Pro: the clipboard reuses ``serializeOutput``, so a paste shows the same
+ * output text that ``%%ask`` sends to Codex.
+ * Con: a rich output arrives as its ``text/plain`` repr, so a copied DataFrame
+ * loses the HTML table.
+ */
+function copyText(language: string, cell: ICell, part: CopyPart): string {
+  const source = fence(text(cell.source), language);
+  if (part === 'input') {
+    return source;
+  }
+  const outputs = isCode(cell)
+    ? cell.outputs.map(output => serializeOutput(output).content).join('\n')
+    : '';
+  const fenced = outputs === '' ? '' : fence(outputs, '');
+  if (part === 'output') {
+    return fenced;
+  }
+  return fenced === '' ? source : `${source}\n\n${fenced}`;
+}
+
+/**
+ * Draw the cell as two bars: the top bar is the source, the bottom bar is the
+ * output, and a solid bar marks the part the button copies.
+ *
+ * The outline bar sets ``fill`` through ``style`` instead of the attribute,
+ * because JupyterLab themes an icon with ``.jp-icon3[fill]`` and that selector
+ * would repaint an empty bar solid.
+ *
+ * Pro: the glyph repeats the shape already on screen, and three of them cost
+ * about 72 px, so a short cell keeps its toolbar instead of hiding it.
+ * Con: nothing in the glyph says "clipboard", so the caption carries that.
+ */
+function bandIcon(part: CopyPart): LabIcon {
+  const bar = (y: number, solid: boolean): string =>
+    `<rect x="2" y="${y}" width="12" height="5" rx="1.5" class="jp-icon3" ` +
+    (solid
+      ? 'fill="#616161"'
+      : 'style="fill:none" stroke="#616161" stroke-width="1.2"') +
+    '/>';
+  return new LabIcon({
+    name: `yukti:copy-${part}`,
+    svgstr:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
+      bar(2.5, part !== 'output') +
+      bar(8.5, part !== 'input') +
+      '</svg>'
+  });
+}
+
+/**
+ * Add three copy commands, which ``schema/cell-copy.json`` places in the cell
+ * toolbar.
+ *
+ * Pro: JupyterLab owns the buttons, so they keep the native look, reach the
+ * command palette, and accept keyboard shortcuts.
+ * Con: one cell toolbar exists at a time and it follows the active cell, so the
+ * buttons appear on the clicked cell, not on the hovered cell.
+ */
+const copyPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:cell-copy',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (app, tracker: INotebookTracker) => {
+    for (const { id, label, part } of COPY_COMMANDS) {
+      app.commands.addCommand(id, {
+        label,
+        icon: bandIcon(part),
+        caption: `${label} of the active cell to the clipboard`,
+        isEnabled: () => tracker.activeCell != null,
+        execute: () => {
+          const panel = tracker.currentWidget;
+          const cell = panel?.content.activeCell?.model.toJSON();
+          if (panel == null || cell == null) {
+            return;
+          }
+          const info = panel.model?.getMetadata('language_info') as
+            | ILanguageInfoMetadata
+            | undefined;
+          const language = isCode(cell)
+            ? info?.name ?? ''
+            : cell.cell_type;
+          Clipboard.copyToSystem(copyText(language, cell, part));
+        }
+      });
+    }
+  }
+};
+
+export default [plugin, plainTextPlugin, copyPlugin];

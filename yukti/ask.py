@@ -206,6 +206,9 @@ class YuktiMagics(Magics):
 
                     The frontend never answers, so the sentence the model
                     reads reports what Yukti sent, not what the notebook drew.
+                    It still says ``finished``, because a result that only
+                    says ``sent`` reads as pending and the model then streams
+                    a message about waiting for a cell nobody can confirm.
                     """
                     payload = tool_payload(tool, arguments, cells)
                     trace.write("notebook_send", payload)
@@ -215,7 +218,7 @@ class YuktiMagics(Magics):
                     stream.close()
                     line = action_line(payload)
                     show_line(line)
-                    return f"sent to the notebook: {line}"
+                    return f"{line}: finished"
 
                 try:
                     answer = server.run(
