@@ -60,22 +60,85 @@ APPROVAL_METHODS = (
 )
 
 
+# One notification per tool item is not enough: ``item/started`` knows the
+# command and ``item/completed`` knows what it printed, so the cell shows both.
+ITEM_METHODS = ("item/started", "item/completed")
+
+# A synthetic item type, because an accepted approval is a line the reader
+# wants in turn order and the protocol sends it as a request, not an item.
+APPROVAL = "approval"
+
+# The whole output of one command can be a megabyte, and the notebook file
+# keeps every byte a cell displays, so only the tail survives. A failure and a
+# summary both live at the end of an output.
+OUTPUT_TAIL = 2000
+
+
 def tool_line(item: Mapping[str, Any]) -> str:
     """Describe one tool item in a single line, or return "" for other items.
 
+    A summary must stay one line, so a command that spans several lines keeps
+    its first line and ``tool_detail`` holds the whole of it.
+
     >>> tool_line({"type": "commandExecution", "command": "pytest -q"})
     '$ pytest -q'
+    >>> tool_line({"type": "commandExecution", "command": "cd yukti\\npytest -q"})
+    '$ cd yukti …'
     >>> tool_line({"type": "fileChange", "changes": [{"path": "/repo/ask.py"}]})
     'edit ask.py'
+    >>> tool_line({"type": "approval"})
+    'approved automatically'
     >>> tool_line({"type": "agentMessage", "text": "hello"})
     ''
     """
     kind = item.get("type")
+    if kind == APPROVAL:
+        return "approved automatically"
     if kind == "commandExecution":
-        return f"$ {str(item.get('command', '')).strip()}"
+        written = str(item.get("command", "")).strip().splitlines() or [""]
+        return f"$ {written[0]}" + (" …" if len(written) > 1 else "")
     if kind == "fileChange":
         changed = [Path(str(one.get("path", ""))).name for one in item.get("changes", [])]
         return f"edit {', '.join(changed)}"
+    return ""
+
+
+def tool_detail(item: Mapping[str, Any]) -> str:
+    """Render what one tool item hides behind its summary line, or "".
+
+    A command shows what it ran, what it printed and how it ended; a file
+    change shows the diff. The caller puts this text in a collapsible block,
+    so a reader who only wants the prose never sees it.
+
+    Pro: the reader can check the command that changed their files.
+    Con: the notebook file grows by the output of every command.
+
+    >>> tool_detail({"type": "commandExecution", "command": "ls",
+    ...              "aggregatedOutput": "ask.py\\n", "exitCode": 0})
+    'ls\\n\\nask.py\\n\\nexit 0'
+    >>> tool_detail({"type": "fileChange",
+    ...              "changes": [{"path": "ask.py", "diff": "+one"}]})
+    'ask.py\\n+one'
+    >>> tool_detail({"type": "agentMessage", "text": "hello"})
+    ''
+    """
+    kind = item.get("type")
+    if kind == "commandExecution":
+        output = str(item.get("aggregatedOutput") or "").strip()
+        if len(output) > OUTPUT_TAIL:
+            output = "[earlier output dropped]\n" + output[-OUTPUT_TAIL:]
+        code = item.get("exitCode")
+        parts = [
+            str(item.get("command", "")).strip(),
+            output,
+            "" if code is None else f"exit {code}",
+        ]
+        return "\n\n".join(part for part in parts if part)
+    if kind == "fileChange":
+        return "\n\n".join(
+            f"{one.get('path', '')}\n{one.get('diff', '')}".strip()
+            for one in item.get("changes", [])
+        )
     return ""
 
 
@@ -323,7 +386,7 @@ class AppServer:
         transcript: str,
         on_delta: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
-        on_tool: Optional[Callable[[str], None]] = None,
+        on_tool: Optional[Callable[[Mapping[str, Any]], None]] = None,
         on_action: Optional[Callable[[str, Any], str]] = None,
     ) -> str:
         request_id = self._next_request_id
@@ -353,12 +416,10 @@ class AppServer:
             if method in APPROVAL_METHODS and "id" in message:
                 self._send({"id": message["id"], "result": {"decision": "acceptForSession"}})
                 if on_tool is not None:
-                    on_tool("approved automatically")
+                    on_tool({"type": APPROVAL})
                 continue
-            if method == "item/started" and on_tool is not None:
-                line = tool_line(params.get("item", {}))
-                if line:
-                    on_tool(line)
+            if method in ITEM_METHODS and on_tool is not None:
+                on_tool(params.get("item", {}))
             if method == "item/agentMessage/delta":
                 delta = params["delta"]
                 deltas.append(delta)

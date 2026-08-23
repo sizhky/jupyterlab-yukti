@@ -18,7 +18,7 @@ from IPython.core.magic import Magics, cell_magic, line_cell_magic, magics_class
 from IPython.display import HTML, Markdown, display
 
 from .actions import action_line, tool_payload
-from .app_server import AppServer
+from .app_server import AppServer, tool_detail, tool_line
 from .comm import NotebookPrefixCache, register_prefix_comm
 from .context import build_transcript
 from .settings import DEFAULTS, help_text, parse_settings, summary
@@ -47,6 +47,43 @@ class DebugPayload:
         return {
             "text/plain": content,
             "text/html": f"<pre>{html.escape(content)}</pre>",
+        }
+
+
+class ToolBlock:
+    """One tool call as a collapsible output, and as text for a later turn.
+
+    JupyterLab renders the richest mime type it knows, so the reader sees a
+    ``details`` element that opens on demand. ``build_transcript`` reads
+    ``text/markdown``, so the next ``%%ask`` cell still receives the command
+    and what it printed. Both tags survive the JupyterLab sanitizer, so the
+    block still collapses in a notebook the reader has not trusted.
+
+    Pro: a long command output costs the reader one line until they open it.
+    Con: one call is written twice, and both texts must say the same thing.
+
+    >>> shown = ToolBlock("$ ls", "ls")._repr_mimebundle_()
+    >>> sorted(shown)
+    ['text/html', 'text/markdown']
+    >>> shown["text/html"].startswith("<details><summary><code>$ ls</code>")
+    True
+    >>> ToolBlock("$ ls", "")._repr_mimebundle_()["text/markdown"]
+    '`$ ls`'
+    """
+
+    def __init__(self, line: str, detail: str) -> None:
+        self.line = line
+        self.detail = detail
+
+    def _repr_mimebundle_(self, include=None, exclude=None):
+        shown = f"<pre>{html.escape(self.detail)}</pre>" if self.detail else ""
+        fenced = f"\n\n```\n{self.detail}\n```" if self.detail else ""
+        return {
+            "text/markdown": f"`{self.line}`{fenced}",
+            "text/html": (
+                f"<details><summary><code>{html.escape(self.line)}</code>"
+                f"</summary>{shown}</details>"
+            ),
         }
 
 
@@ -140,10 +177,29 @@ class YuktiMagics(Magics):
                             Markdown(message.text), display_id=True
                         )
 
-                # A tool line is its own output below the message it follows,
+                # A tool call is its own output below the message it follows,
                 # so prose that keeps growing stays in the block above it.
-                def show_tool(line: str) -> None:
+                def show_line(line: str) -> None:
                     display(Markdown(f"`{line}`"))
+
+                # One item arrives twice, started then completed, so its block
+                # is updated in place and the output it printed lands under the
+                # summary it belongs to instead of at the end of the cell.
+                tools: dict[str, Any] = {}
+
+                def show_tool(item: Any) -> None:
+                    line = tool_line(item)
+                    if not line:
+                        return
+                    block = ToolBlock(line, tool_detail(item))
+                    key = str(item.get("id") or "")
+                    if key in tools:
+                        tools[key].update(block)
+                        return
+                    stream.close()
+                    handle = display(block, display_id=True)
+                    if key:
+                        tools[key] = handle
 
                 def change_notebook(tool: str, arguments: Any) -> str:
                     """Apply one Codex tool call and say what the notebook got.
@@ -158,7 +214,7 @@ class YuktiMagics(Magics):
                     # message opens an output below this line.
                     stream.close()
                     line = action_line(payload)
-                    show_tool(line)
+                    show_line(line)
                     return f"sent to the notebook: {line}"
 
                 try:
