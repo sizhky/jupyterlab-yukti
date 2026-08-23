@@ -1,7 +1,6 @@
 import html
 import json
 import tempfile
-import time
 from typing import Any
 
 from IPython.core.error import UsageError
@@ -23,11 +22,14 @@ SPINNER = HTML(
     "@media(prefers-reduced-motion:reduce){.yukti-spinner{animation:none}}"
     "</style>"
 )
-EDIT_REQUEST = """
-[%%ask --edit]
+ACTION_REQUEST = """
+[response action]
 Return only one JSON action using one of these shapes:
-{"type":"insert_cell","cell_type":"code|markdown","source":"<complete source>"}
+{"type":"answer","source":"<markdown answer>"}
+{"type":"insert_cells","cells":[{"cell_type":"code|markdown","source":"<complete source>"}]}
 {"type":"replace_cells","cells":[{"cell_id":"<id>","source":"<complete source>"}]}
+Use answer for a question, insert_cells for new notebook content, and
+replace_cells for changes to earlier cells.
 Use markdown for prose, formulas, and documentation. Use code for executable source.
 Use only cell_id values present in the transcript. Do not use Markdown fences.
 """
@@ -35,11 +37,17 @@ Use only cell_id values present in the transcript. Do not use Markdown fences.
 
 def parse_edit(answer: str, cells: list[dict[str, Any]]) -> dict[str, Any]:
     action = json.loads(answer)
-    if isinstance(action, dict) and action.get("type") == "insert_cell":
-        if (
-            set(action) == {"type", "cell_type", "source"}
-            and action["cell_type"] in {"code", "markdown"}
-            and isinstance(action["source"], str)
+    if isinstance(action, dict) and action.get("type") == "answer":
+        if set(action) == {"type", "source"} and isinstance(action["source"], str):
+            return action
+    if isinstance(action, dict) and action.get("type") == "insert_cells":
+        inserted = action.get("cells")
+        if isinstance(inserted, list) and inserted and all(
+            isinstance(cell, dict)
+            and set(cell) == {"cell_type", "source"}
+            and cell.get("cell_type") in {"code", "markdown"}
+            and isinstance(cell.get("source"), str)
+            for cell in inserted
         ):
             return action
     if isinstance(action, dict) and action.get("type") == "replace_cells":
@@ -84,42 +92,25 @@ class YuktiMagics(Magics):
     @cell_magic
     def ask(self, line: str, cell: str) -> Any:
         option = line.strip()
-        if option not in {"", "--debug", "--edit"}:
-            raise UsageError("%%ask accepts only --debug or --edit")
+        if option not in {"", "--debug"}:
+            raise UsageError("%%ask accepts only --debug")
 
         request_id, cells, comm = self.prefixes.take()
         transcript = build_transcript(cells, cell)
-        if option != "--edit":
-            comm.close()
         with tempfile.TemporaryDirectory(prefix="yukti-") as root:
             with AppServer(root) as server:
                 if option == "--debug":
+                    comm.close()
                     return DebugPayload(server.debug_details(transcript))
 
-                chunks: list[str] = []
-                last_update = 0.0
                 handle = display(SPINNER, display_id=True)
-
-                if option == "--edit":
-                    try:
-                        action = parse_edit(server.run(transcript + EDIT_REQUEST), cells)
+                try:
+                    action = parse_edit(server.run(transcript + ACTION_REQUEST), cells)
+                    if action["type"] == "answer":
+                        handle.update(Markdown(action["source"]))
+                    else:
                         comm.send({**action, "request_id": request_id})
-                    finally:
-                        comm.close()
-                    message = f"Added a {action.get('cell_type', 'notebook')} cell below."
-                    if action["type"] == "replace_cells":
-                        message = f"Updated {len(action['cells'])} cell(s)."
-                    handle.update(Markdown(message))
-                    return None
-
-                def show_delta(delta: str) -> None:
-                    nonlocal last_update
-                    chunks.append(delta)
-                    now = time.monotonic()
-                    if now - last_update >= 0.05:
-                        handle.update(Markdown("".join(chunks)))
-                        last_update = now
-
-                answer = server.run(transcript, on_delta=show_delta).strip()
-                handle.update(Markdown(answer))
+                        handle.update(Markdown(f"Updated {len(action['cells'])} cell(s)."))
+                finally:
+                    comm.close()
                 return None

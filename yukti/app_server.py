@@ -9,7 +9,8 @@ from typing import Any, Callable, Optional
 
 BASE_INSTRUCTIONS = (
     "You are Yukti. Answer the final [user] question using only the notebook "
-    "transcript in the user message. Do not call tools. Return Markdown."
+    "transcript in the user message. Do not call tools. "
+    "Return only the JSON action requested at the end of the transcript."
 )
 APP_SERVER_COMMAND = (
     "codex",

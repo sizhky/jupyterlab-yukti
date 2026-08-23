@@ -95,16 +95,29 @@ const plugin: JupyterFrontEndPlugin<void> = {
         if (currentIndex < 0) {
           return;
         }
-        const cellType = data.cell_type;
-        if (
-          data.type === 'insert_cell' &&
-          (cellType === 'code' || cellType === 'markdown') &&
-          typeof data.source === 'string'
-        ) {
-          notebook.model.sharedModel.insertCell(currentIndex + 1, {
-            cell_type: cellType,
-            source: data.source,
-            metadata: cellType === 'code' ? { trusted: false } : {}
+        if (data.type === 'insert_cells' && Array.isArray(data.cells)) {
+          const inserted = data.cells.map(value => {
+            if (typeof value !== 'object' || value == null || Array.isArray(value)) {
+              return null;
+            }
+            const candidate = value as Record<string, unknown>;
+            const cellType = candidate.cell_type;
+            return (
+              (cellType === 'code' || cellType === 'markdown') &&
+              typeof candidate.source === 'string'
+            ) ? {
+              cell_type: cellType,
+              source: candidate.source,
+              metadata: cellType === 'code' ? { trusted: false } : {}
+            } : null;
+          });
+          if (inserted.length === 0 || inserted.some(cell => cell == null)) {
+            return;
+          }
+          notebook.model.sharedModel.transact(() => {
+            inserted.forEach((newCell, offset) => {
+              notebook.model!.sharedModel.insertCell(currentIndex + offset + 1, newCell!);
+            });
           });
           notebook.activeCellIndex = currentIndex + 1;
           return;
