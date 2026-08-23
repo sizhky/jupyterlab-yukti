@@ -15,6 +15,8 @@
   },
   "dependencies": {
     "@jupyterlab/application": "^4.4.0",
+    "@jupyterlab/cells": "^4.4.0",
+    "@jupyterlab/codeeditor": "^4.4.0",
     "@jupyterlab/nbformat": "^4.4.0",
     "@jupyterlab/notebook": "^4.4.0"
   },

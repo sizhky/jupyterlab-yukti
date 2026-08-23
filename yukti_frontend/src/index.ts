@@ -1,4 +1,6 @@
 import type { JupyterFrontEndPlugin } from '@jupyterlab/application';
+import type { ICellModel } from '@jupyterlab/cells';
+import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
 import {
   type ICell,
   type IOutput,
@@ -8,9 +10,14 @@ import {
   isExecuteResult,
   isStream
 } from '@jupyterlab/nbformat';
-import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
+import {
+  INotebookTracker,
+  NotebookActions,
+  type NotebookPanel
+} from '@jupyterlab/notebook';
 
 const COMM_TARGET = 'yukti.notebook_prefix';
+const PLAIN_MIME_TYPE = 'text/plain';
 
 type SerializedOutput = { type: string; content: string };
 type SerializedCell = {
@@ -25,6 +32,10 @@ function text(value: unknown): string {
     return value.join('');
   }
   return value == null ? '' : String(value);
+}
+
+function isAskSource(source: string): boolean {
+  return source.trimStart().startsWith('%%ask');
 }
 
 function serializeOutput(output: IOutput): SerializedOutput {
@@ -66,7 +77,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   activate: (_app, tracker: INotebookTracker) => {
     NotebookActions.executionScheduled.connect((_sender, { cell, notebook }) => {
       const source = text(cell.model.toJSON().source);
-      if (!source.trimStart().startsWith('%%ask')) {
+      if (!isAskSource(source)) {
         return;
       }
 
@@ -165,4 +176,85 @@ const plugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-export default plugin;
+/**
+ * Drop Python highlighting from every ``%%ask`` cell.
+ *
+ * A cell editor takes its language from ``cell.model.mimeType``, so
+ * ``text/plain`` leaves the prompt unhighlighted. The notebook resets that
+ * mimetype when a cell arrives and when ``language_info`` lands, so both paths
+ * re-sync.
+ *
+ * Pro: one prefix test per keystroke, and the mimetype setter ignores
+ * same-value writes, so CodeMirror reloads its language only when the cell
+ * crosses the ``%%ask`` boundary.
+ * Con: the mimetype is also what completion and tooltips read, so an ``%%ask``
+ * cell loses Python completions too.
+ */
+function trackAskCells(
+  panel: NotebookPanel,
+  mimeTypes: IEditorMimeTypeService
+): void {
+  const model = panel.model;
+  if (model == null) {
+    return;
+  }
+
+  const codeMimeType = (): string | null => {
+    const info = model.getMetadata('language_info');
+    return info == null ? null : mimeTypes.getMimeTypeByLanguage(info);
+  };
+
+  const sync = (cell: ICellModel): void => {
+    if (cell.type !== 'code') {
+      return;
+    }
+    const mimeType = isAskSource(cell.sharedModel.getSource())
+      ? PLAIN_MIME_TYPE
+      : codeMimeType();
+    if (mimeType != null) {
+      cell.mimeType = mimeType;
+    }
+  };
+
+  const watch = (cell: ICellModel): void => {
+    sync(cell);
+    cell.contentChanged.connect(sync);
+  };
+
+  for (const cell of model.cells) {
+    watch(cell);
+  }
+  model.cells.changed.connect((_, change) => {
+    if (change.type === 'add' || change.type === 'set') {
+      change.newValues.forEach(watch);
+    }
+  });
+  model.metadataChanged.connect((_, change) => {
+    if (change.key === 'language_info') {
+      for (const cell of model.cells) {
+        sync(cell);
+      }
+    }
+  });
+}
+
+const plainTextPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:ask-plain-text',
+  autoStart: true,
+  requires: [INotebookTracker, IEditorServices],
+  activate: (
+    _app,
+    tracker: INotebookTracker,
+    editorServices: IEditorServices
+  ) => {
+    tracker.widgetAdded.connect((_sender, panel) => {
+      void panel.context.ready.then(() => {
+        if (!panel.isDisposed) {
+          trackAskCells(panel, editorServices.mimeTypeService);
+        }
+      });
+    });
+  }
+};
+
+export default [plugin, plainTextPlugin];
