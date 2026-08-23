@@ -1,6 +1,6 @@
 import type { JupyterFrontEndPlugin } from '@jupyterlab/application';
 import { Clipboard } from '@jupyterlab/apputils';
-import type { ICellModel } from '@jupyterlab/cells';
+import type { Cell, ICellModel } from '@jupyterlab/cells';
 import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
 import {
   type ICell,
@@ -16,11 +16,31 @@ import { LabIcon } from '@jupyterlab/ui-components';
 import {
   INotebookTracker,
   NotebookActions,
+  type Notebook,
   type NotebookPanel
 } from '@jupyterlab/notebook';
 
 const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
+const ASK_CLASS = 'yukti-ask-cell';
+
+// The two wrappers, not the cell, because JupyterLab paints the cell itself
+// transparent while it is the active cell and would wipe the tint. The editor
+// keeps the same shade through the two variables, because an edited cell gets
+// an opaque background of its own that would cover the wrapper. Every value is
+// the theme's own blue, so the light and the dark theme each get a shade that
+// sits on their own background.
+const ASK_STYLE = `
+.${ASK_CLASS} .jp-Cell-inputWrapper,
+.${ASK_CLASS} .jp-Cell-outputWrapper {
+  background: color-mix(in srgb, var(--jp-brand-color1) 10%, transparent);
+}
+.${ASK_CLASS} {
+  --jp-cell-editor-background:
+    color-mix(in srgb, var(--jp-brand-color1) 10%, var(--jp-layout-color0));
+  --jp-cell-editor-active-background: var(--jp-cell-editor-background);
+}
+`;
 
 type SerializedOutput = { type: string; content: string };
 type SerializedCell = {
@@ -39,6 +59,12 @@ function text(value: unknown): string {
 
 function isAskSource(source: string): boolean {
   return source.trimStart().startsWith('%%ask');
+}
+
+function asksCodex(cell: Cell): boolean {
+  return (
+    cell.model.type === 'code' && isAskSource(cell.model.sharedModel.getSource())
+  );
 }
 
 function serializeOutput(output: IOutput): SerializedOutput {
@@ -180,18 +206,21 @@ const plugin: JupyterFrontEndPlugin<void> = {
 };
 
 /**
- * Drop Python highlighting from every ``%%ask`` cell.
+ * Show every ``%%ask`` cell as a question: no Python highlighting, and the
+ * ``ASK_CLASS`` the stylesheet tints.
  *
  * A cell editor takes its language from ``cell.model.mimeType``, so
  * ``text/plain`` leaves the prompt unhighlighted. The notebook resets that
  * mimetype when a cell arrives and when ``language_info`` lands, so both paths
- * re-sync.
+ * re-sync. The class goes on the cell widget, which the notebook creates once
+ * per cell and keeps while windowing attaches and detaches its node.
  *
  * Pro: one prefix test per keystroke, and the mimetype setter ignores
  * same-value writes, so CodeMirror reloads its language only when the cell
  * crosses the ``%%ask`` boundary.
  * Con: the mimetype is also what completion and tooltips read, so an ``%%ask``
- * cell loses Python completions too.
+ * cell loses Python completions too; and one keystroke repaints the class of
+ * every cell, because a cell model does not name its widget.
  */
 function trackAskCells(
   panel: NotebookPanel,
@@ -219,18 +248,29 @@ function trackAskCells(
     }
   };
 
+  const paint = (): void => {
+    for (const widget of panel.content.widgets) {
+      widget.node.classList.toggle(ASK_CLASS, asksCodex(widget));
+    }
+  };
+
   const watch = (cell: ICellModel): void => {
     sync(cell);
     cell.contentChanged.connect(sync);
+    cell.contentChanged.connect(paint);
   };
 
   for (const cell of model.cells) {
     watch(cell);
   }
+  paint();
+  // A move or a delete repaints too, because the widgets and the models keep
+  // one order and a cell that changed place keeps its own text.
   model.cells.changed.connect((_, change) => {
     if (change.type === 'add' || change.type === 'set') {
       change.newValues.forEach(watch);
     }
+    paint();
   });
   model.metadataChanged.connect((_, change) => {
     if (change.key === 'language_info') {
@@ -250,6 +290,11 @@ const plainTextPlugin: JupyterFrontEndPlugin<void> = {
     tracker: INotebookTracker,
     editorServices: IEditorServices
   ) => {
+    // One style element, because the tint is two rules and a separate CSS
+    // file would ask the labextension build for a second entry point.
+    const style = document.createElement('style');
+    style.textContent = ASK_STYLE;
+    document.head.appendChild(style);
     tracker.widgetAdded.connect((_sender, panel) => {
       void panel.context.ready.then(() => {
         if (!panel.isDisposed) {
@@ -257,6 +302,80 @@ const plainTextPlugin: JupyterFrontEndPlugin<void> = {
         }
       });
     });
+  }
+};
+
+/**
+ * The cells each bulk run action would run, one entry per action name.
+ *
+ * The slices repeat what ``NotebookActions`` does, because those actions hand
+ * their cells to a private function that no extension can reach.
+ */
+const BULK_RUNS: Record<string, (notebook: Notebook) => Cell[]> = {
+  runAll: notebook => notebook.widgets.slice(),
+  runAllAbove: notebook => notebook.widgets.slice(0, notebook.activeCellIndex),
+  runAllBelow: notebook => notebook.widgets.slice(notebook.activeCellIndex)
+};
+
+type RunCells = (
+  notebook: Notebook,
+  cells: readonly Cell[],
+  ...rest: unknown[]
+) => Promise<boolean>;
+
+/**
+ * Leave every ``%%ask`` cell out of a bulk run.
+ *
+ * ``NotebookActions.runCells`` is the only public entry that names its cells,
+ * and both "Restart Kernel and Run …" commands call it, so the filter lives
+ * there. "Run All Cells" and its Above and Below variants reach a private
+ * function instead, so each one is replaced by its slice plus that filter.
+ * Menu, toolbar and shortcut then agree, because all of them go through these
+ * four names.
+ *
+ * A named run still asks: Shift+Enter and "Run Selected Cells" go through
+ * other actions, which stay as they are.
+ *
+ * Pro: running the whole notebook costs no Codex turn and inserts no cell, so
+ * an ``%%ask`` cell keeps the answer it already holds.
+ * Con: the actions are patched for every notebook in the JupyterLab session,
+ * and a release that changes one of those slices changes it here too.
+ */
+function skipAskOnBulkRun(): void {
+  const actions = NotebookActions as unknown as Record<string, unknown>;
+  const runCells = actions.runCells as RunCells | undefined;
+  // A renamed action leaves JupyterLab's own behaviour in place, because one
+  // Codex turn too many beats a Run All that runs nothing.
+  if (typeof runCells !== 'function') {
+    return;
+  }
+  const runOthers: RunCells = (notebook, cells, ...rest) => {
+    const kept = cells.filter(cell => !asksCodex(cell));
+    return kept.length === 0
+      ? Promise.resolve(false)
+      : runCells(notebook, kept, ...rest);
+  };
+  actions.runCells = runOthers;
+  for (const [name, slice] of Object.entries(BULK_RUNS)) {
+    if (typeof actions[name] !== 'function') {
+      continue;
+    }
+    actions[name] = (notebook: Notebook, ...rest: unknown[]) => {
+      if (notebook.model == null) {
+        return Promise.resolve(false);
+      }
+      const done = runOthers(notebook, slice(notebook), ...rest);
+      notebook.deselectAll();
+      return done;
+    };
+  }
+}
+
+const skipAskPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:skip-ask-on-run-all',
+  autoStart: true,
+  activate: () => {
+    skipAskOnBulkRun();
   }
 };
 
@@ -378,4 +497,4 @@ const copyPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-export default [plugin, plainTextPlugin, copyPlugin];
+export default [plugin, plainTextPlugin, skipAskPlugin, copyPlugin];
