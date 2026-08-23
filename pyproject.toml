@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jupyterlab-yukti"
-version = "0.0.4"
+version = "0.0.5"
 readme = "README.md"
 description = "Ask Codex about the visible prefix of a Jupyter notebook"
 authors = [{ name = "Yeshwanth Sizhky" }]
