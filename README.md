@@ -122,6 +122,29 @@ Why did the previous query return these rows?
 
 Debug mode starts the local App Server protocol and stops before the model turn.
 
+## Measure a slow turn
+
+Add `--trace` to write every message of the turn to
+`~/.cache/yukti/traces/<time>.jsonl`, and to print the timing table under the
+answer:
+
+```python
+%%ask --trace
+Find the number check() is hiding.
+```
+
+The table names each wait of half a second or more, and the header splits the
+turn three ways: `model` is Codex thinking and streaming, `Yukti` is the
+notebook work itself, and `unread` is a tool call that had arrived and was
+waiting to be read, which should stay near zero. Read any earlier trace the
+same way:
+
+```bash
+python -m yukti.trace ~/.cache/yukti/traces/*.jsonl
+```
+
+Pass `--gap-ms 2000` to name only the waits over two seconds.
+
 ## Copy a cell
 
 Click a cell. Three buttons join the cell toolbar above it. Each button shows

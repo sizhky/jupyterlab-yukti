@@ -1,5 +1,10 @@
 import json
+import os
+import selectors
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -7,6 +12,20 @@ from unittest.mock import MagicMock, patch
 
 from yukti.app_server import AppServer, missing_protocol, verify_protocol
 from yukti.settings import DEFAULTS
+
+
+def reader(server: Any, source: int) -> Any:
+    """Give ``server`` a real pipe to read, because its reader owns the bytes.
+
+    A mocked ``readline`` cannot show the bug the reader exists to fix: the
+    stall only happens when two messages share one write on a real pipe.
+    """
+    server._stdout = source
+    server._pending = b""
+    server._selector = selectors.DefaultSelector()
+    server._selector.register(source, selectors.EVENT_READ)
+    server._deadline = time.monotonic() + 5
+    return server
 
 
 class AppServerRunTest(unittest.TestCase):
@@ -176,6 +195,52 @@ class ThreadStartTest(unittest.TestCase):
         self.assertNotIn("run_cells", seen["thread/start"]["baseInstructions"])
 
 
+class ReadTest(unittest.TestCase):
+    """Two messages in one write must arrive together.
+
+    The App Server writes ``item/started`` and ``item/tool/call`` in one write
+    and then waits for the answer. A reader that leaves the second line in a
+    buffer the selector cannot see stalls until the App Server writes again,
+    which cost every tool call about eleven seconds.
+    """
+
+    WRITES_BOTH_THEN_SLEEPS = (
+        "import sys, time;"
+        "sys.stdout.write('"
+        r'{"method":"item/started"}\n{"method":"item/tool/call"}\n'
+        "');"
+        "sys.stdout.flush(); time.sleep(30)"
+    )
+
+    def test_the_second_message_does_not_wait_for_the_next_write(self) -> None:
+        child = subprocess.Popen(
+            [sys.executable, "-c", self.WRITES_BOTH_THEN_SLEEPS],
+            stdout=subprocess.PIPE,
+        )
+        self.addCleanup(child.kill)
+        server = reader(AppServer.__new__(AppServer), child.stdout.fileno())
+        self.addCleanup(server._selector.close)
+
+        started = time.monotonic()
+        first, second = server._read(), server._read()
+        waited = time.monotonic() - started
+
+        self.assertEqual(
+            [first["method"], second["method"]], ["item/started", "item/tool/call"]
+        )
+        self.assertLess(waited, 1.0)
+
+    def test_a_blank_line_is_not_the_end_of_the_stream(self) -> None:
+        read, write = os.pipe()
+        os.write(write, b'\n{"method":"turn/completed"}\n')
+        os.close(write)
+        self.addCleanup(os.close, read)
+        server = reader(AppServer.__new__(AppServer), read)
+        self.addCleanup(server._selector.close)
+
+        self.assertEqual(server._read()["method"], "turn/completed")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -192,10 +257,11 @@ class InterruptTurnTest(unittest.TestCase):
         server._send = server.sent.append
         server.process = MagicMock()
         server.process.poll.return_value = None
-        server.process.stdout.readline.side_effect = replies
-        server._selector = MagicMock()
-        server._selector.select.return_value = [object()]
-        return server
+        read, write = os.pipe()
+        os.write(write, "".join(replies).encode())
+        os.close(write)
+        self.addCleanup(os.close, read)
+        return reader(server, read)
 
     def test_an_open_turn_is_interrupted_and_awaited(self) -> None:
         server = self._server(

@@ -30,7 +30,7 @@ from .context import build_transcript
 from .execute import run_source
 from .settings import DEFAULTS, help_text, parse_settings, summary
 from .stream import MessageStream
-from .trace import Trace
+from .trace import Trace, read as read_trace
 
 
 # One turn may run a cell, read the output, fix the cell and run it again, so
@@ -295,19 +295,24 @@ class YuktiMagics(Magics):
                     stream.close()
                     line = action_line(payload)
                     show_line(line)
+                    result = f"{line}: finished"
                     if payload["type"] == RUN_CELLS:
-                        return f"{line}: finished\n{run_named(payload['cells'])}"
-                    if payload["type"] == INSERT_CELLS:
+                        result = f"{result}\n{run_named(payload['cells'])}"
+                    elif payload["type"] == INSERT_CELLS:
                         for cell in payload["cells"]:
                             inserted[cell["cell_id"]] = cell
                         ids = ", ".join(cell["cell_id"] for cell in payload["cells"])
-                        return f"{line}: finished, cell_id {ids}"
-                    # A rewritten cell keeps its cell_id, so the next run of
-                    # that id must run the source the notebook now holds.
-                    for cell in payload["cells"]:
-                        if cell["cell_id"] in inserted:
-                            inserted[cell["cell_id"]]["source"] = cell["source"]
-                    return f"{line}: finished"
+                        result = f"{result}, cell_id {ids}"
+                    else:
+                        # A rewritten cell keeps its cell_id, so the next run of
+                        # that id must run the source the notebook now holds.
+                        for cell in payload["cells"]:
+                            if cell["cell_id"] in inserted:
+                                inserted[cell["cell_id"]]["source"] = cell["source"]
+                    # The answer closes the call, so this line is where a
+                    # reader of the trace sees Yukti's own share of the turn end.
+                    trace.write("tool_result", {"line": line, "text": result})
+                    return result
 
                 try:
                     answer = server.run(
@@ -325,4 +330,5 @@ class YuktiMagics(Magics):
                     trace.close()
                     if trace.path is not None:
                         display(Markdown(f"Trace: `{trace.path}`"))
+                        display(Markdown(read_trace(trace.path)))
                 return None

@@ -220,6 +220,10 @@ _VERIFIED: set[str] = set()
 # the turn to come back aborted.
 INTERRUPT_WAIT = 2.0
 
+# One read takes whatever the pipe holds. The App Server writes several
+# messages in one write, so the reader must keep what it did not use yet.
+READ_BYTES = 65536
+
 
 def missing_protocol(client_request: Any, server_request: Any) -> list[str]:
     """Name what Yukti sends that this Codex protocol schema does not read.
@@ -327,8 +331,14 @@ class AppServer:
             bufsize=1,
         )
         assert self.process.stdin and self.process.stdout and self.process.stderr
+        # The reader takes the bytes of stdout itself and never calls readline
+        # on the wrapper, because a wrapper that buffers a line the selector
+        # cannot see is what made a whole turn wait. ``_pending`` is that
+        # buffer, owned here.
+        self._stdout = self.process.stdout.fileno()
+        self._pending = b""
         self._selector = selectors.DefaultSelector()
-        self._selector.register(self.process.stdout, selectors.EVENT_READ)
+        self._selector.register(self._stdout, selectors.EVENT_READ)
         self._deadline = time.monotonic() + timeout
         self._next_request_id = 0
         self.sent: list[dict[str, Any]] = []
@@ -356,12 +366,42 @@ class AppServer:
         self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
         self.process.stdin.flush()
 
+    def _line(self, deadline: float) -> bytes:
+        """The next whole line of stdout, or ``b""`` once the process stops.
+
+        The App Server writes ``item/started`` and ``item/tool/call`` in one
+        write. A reader that selects on the pipe and then reads one line leaves
+        the second message inside a buffer the selector cannot see: the pipe
+        goes quiet, the reader waits, and the App Server waits for an answer to
+        a request already delivered. That deadlock ended only when the App
+        Server wrote something else, about eleven seconds later, and it cost
+        every tool call those eleven seconds.
+
+        So this reader keeps the bytes it did not use, and only waits on the
+        pipe when it holds no whole line.
+
+        Pro: a message that has already arrived is never waiting on the next
+        one, and one call answers in microseconds.
+        Con: the line lives in ``_pending``, so the reader owns a buffer that
+        the standard library used to own badly.
+
+        Raises ``TimeoutError`` when ``deadline`` passes with no whole line.
+        """
+        while True:
+            while b"\n" not in self._pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self._selector.select(remaining):
+                    raise TimeoutError("Codex App Server timed out")
+                chunk = os.read(self._stdout, READ_BYTES)
+                if not chunk:
+                    return b""
+                self._pending += chunk
+            line, _, self._pending = self._pending.partition(b"\n")
+            if line.strip():
+                return line
+
     def _read(self) -> dict[str, Any]:
-        remaining = self._deadline - time.monotonic()
-        if remaining <= 0 or not self._selector.select(remaining):
-            raise TimeoutError("Codex App Server timed out")
-        assert self.process.stdout
-        line = self.process.stdout.readline()
+        line = self._line(self._deadline)
         if line:
             return json.loads(line)
         assert self.process.stderr
@@ -568,13 +608,12 @@ class AppServer:
         )
         self._next_request_id += 1
         self.turn_id = ""
-        assert self.process.stdout
         deadline = time.monotonic() + INTERRUPT_WAIT
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not self._selector.select(remaining):
+            try:
+                line = self._line(deadline)
+            except TimeoutError:
                 return
-            line = self.process.stdout.readline()
             if not line:
                 return
             try:
