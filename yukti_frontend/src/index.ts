@@ -1,6 +1,7 @@
 import type { JupyterFrontEndPlugin } from '@jupyterlab/application';
 import { Clipboard } from '@jupyterlab/apputils';
-import type { Cell, CodeCell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
+import { CodeCell } from '@jupyterlab/cells';
+import type { Cell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
 import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
 import { PageConfig, PathExt, URLExt } from '@jupyterlab/coreutils';
 import {
@@ -24,26 +25,49 @@ import {
 const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
 const ASK_CLASS = 'yukti-ask-cell';
+const FROZEN_CLASS = 'yukti-frozen-cell';
+const HIDDEN_CLASS = 'yukti-hidden-cell';
+const HIDE_TAG = 'yukti-hidden';
 const EDIT_CLASS = 'yukti-edit-output';
 const EDITING_CLASS = 'yukti-editing';
 const AREA_CLASS = 'yukti-edit-area';
 const AREA_MAX_VH = 35;
 
-// The two wrappers, not the cell, because JupyterLab paints the cell itself
-// transparent while it is the active cell and would wipe the tint. The editor
-// keeps the same shade through the two variables, because an edited cell gets
-// an opaque background of its own that would cover the wrapper. Every value is
-// the theme's own blue, so the light and the dark theme each get a shade that
-// sits on their own background.
-const ASK_STYLE = `
-.${ASK_CLASS} .jp-Cell-inputWrapper,
-.${ASK_CLASS} .jp-Cell-outputWrapper {
-  background: color-mix(in srgb, var(--jp-brand-color1) 10%, transparent);
+/**
+ * Tint one cell class with 10 percent of a theme colour.
+ *
+ * The two wrappers carry the tint, not the cell, because JupyterLab paints the
+ * cell itself transparent while it is the active cell and would wipe the
+ * shade. The editor keeps the same shade through the two variables, because an
+ * edited cell gets an opaque background of its own that would cover the
+ * wrapper.
+ *
+ * Pro: the colour arrives as a theme variable, so the light and the dark theme
+ * each get a shade that sits on their own background.
+ * Con: a cell that is both ``%%ask`` and frozen shows one tint only, whichever
+ * rule the stylesheet states last.
+ */
+function tint(cls: string, color: string): string {
+  return `
+.${cls} .jp-Cell-inputWrapper,
+.${cls} .jp-Cell-outputWrapper {
+  background: color-mix(in srgb, ${color} 10%, transparent);
 }
-.${ASK_CLASS} {
+.${cls} {
   --jp-cell-editor-background:
-    color-mix(in srgb, var(--jp-brand-color1) 10%, var(--jp-layout-color0));
+    color-mix(in srgb, ${color} 10%, var(--jp-layout-color0));
   --jp-cell-editor-active-background: var(--jp-cell-editor-background);
+}
+`;
+}
+
+// Red marks the cell that spends a Codex turn, blue the cell that runs no
+// more. Frozen comes last, so freezing an ``%%ask`` cell shows it as frozen.
+const ASK_STYLE = tint(ASK_CLASS, 'var(--jp-error-color1)') +
+  tint(FROZEN_CLASS, 'var(--jp-brand-color1)') + `
+.${HIDDEN_CLASS} .jp-Cell-inputWrapper,
+.${HIDDEN_CLASS} .jp-Cell-outputWrapper {
+  opacity: 0.5;
 }
 .${ASK_CLASS} .jp-OutputArea-child {
   position: relative;
@@ -101,6 +125,40 @@ function asksCodex(cell: Cell): boolean {
   return (
     cell.model.type === 'code' && isAskSource(cell.model.sharedModel.getSource())
   );
+}
+
+/**
+ * Whether the cell is frozen.
+ *
+ * ``editable: false`` is nbformat's own read-only flag, and JupyterLab already
+ * honours it: a cell widget keeps ``syncEditable`` on, so the editor turns
+ * read-only the moment the metadata changes, and the flag saves with the
+ * .ipynb. Yukti adds the tint and the bulk-run skip on top.
+ *
+ * Pro: no private metadata key, and the freeze survives a reload and a copy of
+ * the notebook to another machine.
+ * Con: a cell that some other tool marked ``editable: false`` reads as frozen
+ * here too.
+ */
+function isFrozen(cell: ICellModel): boolean {
+  return cell.sharedModel.getMetadata('editable') === false;
+}
+
+/**
+ * Whether the cell stays out of the ``%%ask`` prompt.
+ *
+ * The flag is one nbformat cell tag, the same extension point nbconvert's
+ * ``remove_cell_tags`` reads, so the reader can add and drop it by hand in
+ * JupyterLab's own Tags panel and it saves with the .ipynb.
+ *
+ * Pro: no private metadata key, and one tag carries both parts of the cell,
+ * because a hidden cell sends neither its source nor its outputs.
+ * Con: a tag list is shared ground, so a tag some other tool wrote sits beside
+ * this one and a hand-edited list can hold it twice.
+ */
+function isHidden(cell: ICellModel): boolean {
+  const tags = cell.sharedModel.getMetadata('tags');
+  return Array.isArray(tags) && tags.includes(HIDE_TAG);
 }
 
 function serializeOutput(output: IOutput): SerializedOutput {
@@ -199,7 +257,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
   activate: (_app, tracker: INotebookTracker) => {
     NotebookActions.executionScheduled.connect((_sender, { cell, notebook }) => {
       const source = text(cell.model.toJSON().source);
-      if (!isAskSource(source)) {
+      if (!isAskSource(source) || isFrozen(cell.model)) {
         return;
       }
 
@@ -210,8 +268,12 @@ const plugin: JupyterFrontEndPlugin<void> = {
         return;
       }
 
+      // A hidden cell drops out here, which is the one place the prompt is
+      // built, so Codex reads neither its source nor its outputs and cannot
+      // name it in a ``replace_cells`` call either.
       const cells = notebook.widgets
         .slice(0, index)
+        .filter(widget => !isHidden(widget.model))
         .map(widget => serializeCell(widget.model.id, widget.model.toJSON()));
       const requestId = `${cell.model.id}:${Date.now()}`;
       const comm = kernel.createComm(COMM_TARGET);
@@ -370,6 +432,8 @@ function trackAskCells(
   const paint = (): void => {
     for (const widget of panel.content.widgets) {
       widget.node.classList.toggle(ASK_CLASS, asksCodex(widget));
+      widget.node.classList.toggle(FROZEN_CLASS, isFrozen(widget.model));
+      widget.node.classList.toggle(HIDDEN_CLASS, isHidden(widget.model));
     }
   };
 
@@ -377,6 +441,7 @@ function trackAskCells(
     sync(cell);
     cell.contentChanged.connect(sync);
     cell.contentChanged.connect(paint);
+    cell.metadataChanged.connect(paint);
   };
 
   for (const cell of model.cells) {
@@ -443,7 +508,7 @@ type RunCells = (
 ) => Promise<boolean>;
 
 /**
- * Leave every ``%%ask`` cell out of a bulk run.
+ * Leave every ``%%ask`` cell and every frozen cell out of a bulk run.
  *
  * ``NotebookActions.runCells`` is the only public entry that names its cells,
  * and both "Restart Kernel and Run …" commands call it, so the filter lives
@@ -452,8 +517,9 @@ type RunCells = (
  * Menu, toolbar and shortcut then agree, because all of them go through these
  * four names.
  *
- * A named run still asks: Shift+Enter and "Run Selected Cells" go through
- * other actions, which stay as they are.
+ * A named run still asks: Shift+Enter and "Run Selected Cells" go through a
+ * private function that no extension can reach, so those two paths stay as
+ * they are. A frozen cell is stopped later instead, by ``blockFrozenRuns``.
  *
  * Pro: running the whole notebook costs no Codex turn and inserts no cell, so
  * an ``%%ask`` cell keeps the answer it already holds.
@@ -469,7 +535,9 @@ function skipAskOnBulkRun(): void {
     return;
   }
   const runOthers: RunCells = (notebook, cells, ...rest) => {
-    const kept = cells.filter(cell => !asksCodex(cell));
+    const kept = cells.filter(
+      cell => !asksCodex(cell) && !isFrozen(cell.model)
+    );
     return kept.length === 0
       ? Promise.resolve(false)
       : runCells(notebook, kept, ...rest);
@@ -490,11 +558,47 @@ function skipAskOnBulkRun(): void {
   }
 }
 
+type Execute = typeof CodeCell.execute;
+
+/**
+ * Let no frozen cell reach the kernel.
+ *
+ * ``CodeCell.execute`` is the one call every run path ends at: Shift+Enter,
+ * Ctrl+Enter, Alt+Enter, "Run Selected Cells", each Run All, and each "Restart
+ * Kernel and Run …". Two of those paths go through a private function that no
+ * extension can reach, so the guard sits at the shared end instead of at the
+ * six starts.
+ *
+ * Skipping returns ``undefined``, which the signature already allows for a
+ * cell with no reply, so JupyterLab reads the cell as run and walks on to the
+ * next one. Nothing writes the ``*`` prompt, because that write lives inside
+ * the call that is skipped.
+ *
+ * Pro: one patch covers every present path and every path a later release
+ * adds, and the cell keeps the output it already holds.
+ * Con: the skip is silent, so the tint and the read-only editor are the only
+ * signs the cell did not run.
+ */
+function blockFrozenRuns(): void {
+  const cells = CodeCell as unknown as Record<string, unknown>;
+  const execute = cells.execute as Execute | undefined;
+  // A renamed static leaves JupyterLab's own behaviour in place, because a
+  // frozen cell that runs beats a notebook that cannot run at all.
+  if (typeof execute !== 'function') {
+    return;
+  }
+  cells.execute = (cell: CodeCell, ...rest: unknown[]) =>
+    isFrozen(cell.model)
+      ? Promise.resolve(undefined)
+      : (execute as (...args: unknown[]) => unknown)(cell, ...rest);
+}
+
 const skipAskPlugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:skip-ask-on-run-all',
   autoStart: true,
   activate: () => {
     skipAskOnBulkRun();
+    blockFrozenRuns();
   }
 };
 
@@ -745,6 +849,177 @@ const copyPlugin: JupyterFrontEndPlugin<void> = {
 };
 
 /**
+ * One padlock, closed while the cell is frozen.
+ *
+ * The glyph repeats the copy buttons' 16 px box and their ``jp-icon3`` class,
+ * so the theme paints every button the same grey.
+ */
+function padlockIcon(locked: boolean): LabIcon {
+  const shackle = locked ? 'M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7' :
+    'M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0';
+  return new LabIcon({
+    name: `yukti:freeze-${locked ? 'on' : 'off'}`,
+    svgstr:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
+      `<path d="${shackle}" class="jp-icon3" style="fill:none" ` +
+      'stroke="#616161" stroke-width="1.3"/>' +
+      '<rect x="3" y="7" width="10" height="7" rx="1.5" class="jp-icon3" ' +
+      'fill="#616161"/></svg>'
+  });
+}
+
+/**
+ * One eye, open while the cell reaches Codex.
+ *
+ * The glyph repeats the copy buttons' 16 px box and their ``jp-icon3`` class,
+ * so the theme paints every button the same grey.
+ */
+function eyeIcon(open: boolean): LabIcon {
+  const grey = 'class="jp-icon3" style="fill:none" stroke="#616161" ';
+  return new LabIcon({
+    name: `yukti:hide-${open ? 'off' : 'on'}`,
+    svgstr:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
+      '<path d="M1.4 8S4.3 3.9 8 3.9 14.6 8 14.6 8 11.7 12.1 8 12.1 1.4 8 ' +
+      `1.4 8Z" ${grey}stroke-width="1.3"/>` +
+      '<circle cx="8" cy="8" r="1.9" class="jp-icon3" fill="#616161"/>' +
+      (open ? '' : `<path d="M2.8 13.2 13.2 2.8" ${grey}stroke-width="1.5"/>`) +
+      '</svg>'
+  });
+}
+
+// Both padlocks and both eyes are built once, because ``LabIcon`` keys its
+// instances by name and warns about a second icon under a name it already
+// holds.
+const PADLOCKS = { on: padlockIcon(true), off: padlockIcon(false) };
+const EYES = { on: eyeIcon(true), off: eyeIcon(false) };
+
+type CellFlag = {
+  /** The command id ``schema/cell-copy.json`` names. */
+  command: string;
+  /** Whether the flag sits on this cell. */
+  read: (cell: ICellModel) => boolean;
+  /** Set the flag, or clear it. */
+  write: (cell: ICellModel, on: boolean) => void;
+  /** The glyph, the menu label and the tooltip, each for both states. */
+  icon: (on: boolean) => LabIcon;
+  label: (on: boolean) => string;
+  caption: (on: boolean) => string;
+};
+
+/**
+ * One toolbar button that turns one cell flag on and off.
+ *
+ * Every part that differs between two such buttons arrives in ``flag``, so the
+ * command wiring is written once: the label, the glyph and the tooltip all
+ * read the active cell, so the button has to be told when that cell changes
+ * and when its own click lands.
+ *
+ * Pro: JupyterLab owns the button, so it keeps the native look, reaches the
+ * command palette, and accepts a keyboard shortcut.
+ * Con: one cell toolbar exists at a time and it follows the active cell, so
+ * the button acts on the clicked cell, never on the hovered one.
+ */
+function flagPlugin(id: string, flag: CellFlag): JupyterFrontEndPlugin<void> {
+  return {
+    id,
+    autoStart: true,
+    requires: [INotebookTracker],
+    activate: (app, tracker: INotebookTracker) => {
+      const on = (): boolean => {
+        const cell = tracker.activeCell;
+        return cell != null && flag.read(cell.model);
+      };
+      app.commands.addCommand(flag.command, {
+        label: () => flag.label(on()),
+        icon: () => flag.icon(on()),
+        caption: () => flag.caption(on()),
+        isEnabled: () => tracker.activeCell != null,
+        isToggled: on,
+        execute: () => {
+          const cell = tracker.activeCell;
+          if (cell == null) {
+            return;
+          }
+          flag.write(cell.model, !flag.read(cell.model));
+          app.commands.notifyCommandChanged(flag.command);
+        }
+      });
+      tracker.activeCellChanged.connect(() => {
+        app.commands.notifyCommandChanged(flag.command);
+      });
+    }
+  };
+}
+
+/**
+ * Freeze and unfreeze the active cell.
+ *
+ * Freezing writes ``editable: false``, so JupyterLab turns the editor
+ * read-only, ``trackAskCells`` tints the cell, and ``skipAskOnBulkRun`` leaves
+ * it out of every Run All. Unfreezing deletes the key instead of writing
+ * ``true``, so an unfrozen cell saves the same nbformat it had before.
+ *
+ * Pro: an expensive cell keeps its output through every run path, and the
+ * freeze travels with the .ipynb.
+ * Con: a frozen cell still runs from the debugger's own entry points and from
+ * any code that calls the kernel directly, because ``blockFrozenRuns`` guards
+ * ``CodeCell.execute`` only.
+ */
+const freezePlugin = flagPlugin('yukti:freeze-cell', {
+  command: 'yukti:toggle-freeze',
+  read: isFrozen,
+  write: (cell, on) =>
+    on
+      ? cell.sharedModel.setMetadata('editable', false)
+      : cell.sharedModel.deleteMetadata('editable'),
+  icon: frozen => (frozen ? PADLOCKS.on : PADLOCKS.off),
+  label: frozen => (frozen ? 'Unfreeze Cell' : 'Freeze Cell'),
+  caption: frozen =>
+    frozen
+      ? 'Unfreeze the active cell, so it edits and runs again'
+      : 'Freeze the active cell: read-only, and skipped by Run All'
+});
+
+/**
+ * Keep the active cell out of the next question's prompt, or put it back.
+ *
+ * Hiding adds the ``yukti-hidden`` tag, which drops the cell from the prefix
+ * the ``%%ask`` cell sends and dims it on screen. Showing again drops the tag,
+ * and drops the whole ``tags`` list when nothing else is in it, so a notebook
+ * that never used tags saves the nbformat it had before.
+ *
+ * The cell itself is untouched: it edits, runs and prints as it always did,
+ * because hiding speaks to Codex only.
+ *
+ * Pro: a long log or a dead end costs no context, and the reader still sees it.
+ * Con: Codex reads a notebook with a hole in it, so a hidden import or a
+ * hidden variable can make the answer name something it cannot see.
+ */
+const hidePlugin = flagPlugin('yukti:hide-cell', {
+  command: 'yukti:toggle-hidden',
+  read: isHidden,
+  write: (cell, on) => {
+    const tags = cell.sharedModel.getMetadata('tags');
+    const kept = (Array.isArray(tags) ? tags : []).filter(
+      tag => tag !== HIDE_TAG
+    );
+    const next = on ? [...kept, HIDE_TAG] : kept;
+    if (next.length === 0) {
+      cell.sharedModel.deleteMetadata('tags');
+    } else {
+      cell.sharedModel.setMetadata('tags', next);
+    }
+  },
+  icon: hidden => (hidden ? EYES.off : EYES.on),
+  label: hidden => (hidden ? 'Show Cell to Codex' : 'Hide Cell from Codex'),
+  caption: hidden =>
+    hidden
+      ? 'Send this cell to Codex again with the next question'
+      : 'Leave this cell out of every %%ask prompt: no source, no output'
+});
+
+/**
  * The folder that holds the notebook, ``''`` at the server's root.
  */
 function notebookDir(panel: NotebookPanel | null): string | null {
@@ -816,5 +1091,7 @@ export default [
   skipAskPlugin,
   editOutputPlugin,
   copyPlugin,
+  freezePlugin,
+  hidePlugin,
   fileMenuPlugin
 ];

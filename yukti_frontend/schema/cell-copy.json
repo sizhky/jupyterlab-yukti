@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema",
   "title": "Yukti Cell Copy",
-  "description": "Copy buttons for the cell toolbar.",
+  "description": "Copy, freeze and hide buttons for the cell toolbar.",
   "jupyter.lab.toolbars": {
     "Cell": [
       {
@@ -18,6 +18,16 @@
         "name": "yukti-copy-both",
         "command": "yukti:copy-both",
         "rank": 62
+      },
+      {
+        "name": "yukti-freeze",
+        "command": "yukti:toggle-freeze",
+        "rank": 63
+      },
+      {
+        "name": "yukti-hide",
+        "command": "yukti:toggle-hidden",
+        "rank": 64
       }
     ]
   },
