@@ -77,9 +77,12 @@ stage:  ## bump, then commit the work and the bump together
 		echo 'stage: nothing to commit'; \
 	fi
 
+# `rm -rf`, not `npm run clean`. Clean runs before `npm ci`, so rimraf may not
+# be installed yet, and a missing binary must never stop a release.
 clean:  ## delete every build output
 	@$(call SCRUB,dist build *.egg-info $(RELENV))
-	npm run clean
+	@$(call SCRUB,yukti_frontend/lib yukti_frontend/labextension \
+		yukti_frontend/tsconfig.tsbuildinfo)
 
 guard:  ## refuse a release that cannot succeed
 	@test -n "$(VERSION)" || { echo 'guard: cannot read the version'; exit 1; }
