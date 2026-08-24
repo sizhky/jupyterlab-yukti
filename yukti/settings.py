@@ -34,9 +34,14 @@ PROFILES = {
     "full": {"sandbox": "danger-full-access", "cwd": ".", "network": True, "tools": True},
 }
 
+# ``run`` sits outside the profiles: a sandbox bounds what Codex may do on
+# disk, and running a cell happens in the kernel instead, where the user's own
+# namespace is. It is on, so an inserted cell can report what it printed, and
+# one line turns it off.
 DEFAULTS: dict[str, Any] = {
     "permissions": "sandboxed",
     "approvals": "never",
+    "run": True,
     "writable_roots": [],
     **PROFILES["sandboxed"],
 }
@@ -49,6 +54,7 @@ KEY_HELP = {
     "cwd": "a path, or empty for a disposable directory",
     "network": "on | off",
     "tools": "on | off",
+    "run": "on | off, to run the code cells Yukti inserts",
     "writable_roots": "paths separated by commas",
 }
 PROFILE_KEYS = ("sandbox", "cwd", "network", "tools")
@@ -81,6 +87,8 @@ def summary(current: Mapping[str, Any]) -> str:
     >>> "| `sandbox` | read-only |" in summary(DEFAULTS)
     True
     >>> "| `network` | off |" in summary(DEFAULTS)
+    True
+    >>> "| `run` | on |" in summary(DEFAULTS)
     True
     """
     rows = [
@@ -157,7 +165,7 @@ def _value(key: str, raw: str) -> Any:
         return _choice(key, raw, SANDBOXES)
     if key == "approvals":
         return _choice(key, raw, tuple(APPROVAL_PARAMS))
-    if key in {"network", "tools"}:
+    if key in {"network", "tools", "run"}:
         return FLAGS[_choice(key, raw, tuple(FLAGS))]
     if key == "writable_roots":
         return [root.strip() for root in raw.split(",") if root.strip()]
@@ -178,6 +186,8 @@ def parse_settings(cell: str, current: Mapping[str, Any]) -> dict[str, Any]:
     True
     >>> parse_settings("writable_roots: /tmp/a, /tmp/b", DEFAULTS)["writable_roots"]
     ['/tmp/a', '/tmp/b']
+    >>> parse_settings("run: off", DEFAULTS)["run"]
+    False
     >>> parse_settings("sandbox: everything", DEFAULTS)
     Traceback (most recent call last):
     ValueError: Yukti setting: sandbox must be one of read-only, workspace-write, danger-full-access

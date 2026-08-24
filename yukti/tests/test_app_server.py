@@ -161,8 +161,19 @@ class ThreadStartTest(unittest.TestCase):
         self.assertEqual(seen["initialize"]["capabilities"], {"experimentalApi": True})
         self.assertEqual(
             [tool["name"] for tool in seen["thread/start"]["dynamicTools"]],
+            ["insert_cells", "replace_cells", "run_cells"],
+        )
+        self.assertIn("run_cells", seen["thread/start"]["baseInstructions"])
+
+        server.settings["run"] = False
+        with patch("yukti.app_server.verify_protocol"):
+            server._initialize()
+
+        self.assertEqual(
+            [tool["name"] for tool in seen["thread/start"]["dynamicTools"]],
             ["insert_cells", "replace_cells"],
         )
+        self.assertNotIn("run_cells", seen["thread/start"]["baseInstructions"])
 
 
 if __name__ == "__main__":

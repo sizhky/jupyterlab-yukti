@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "title": "Yukti File Menu",
+  "description": "File menu entries for the current notebook's folder.",
+  "jupyter.lab.menus": {
+    "main": [
+      {
+        "id": "jp-mainmenu-file",
+        "items": [
+          {
+            "command": "yukti:new-notebook-here",
+            "rank": 0.5
+          },
+          {
+            "command": "yukti:open-in-cwd",
+            "rank": 0.6
+          }
+        ]
+      }
+    ]
+  },
+  "properties": {},
+  "additionalProperties": false,
+  "type": "object"
+}

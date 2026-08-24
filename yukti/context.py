@@ -3,7 +3,7 @@ question.
 
 ``truncate_output`` and ``truncate_request`` used to be two near-identical
 public functions that no test exercised. They differed by one word, so one
-private helper carries both limits now.
+helper carries both limits now, and ``execute`` bounds a cell output with it.
 """
 
 from collections.abc import Mapping, Sequence
@@ -14,12 +14,12 @@ OUTPUT_LIMIT_BYTES = 8 * 1024
 REQUEST_LIMIT_BYTES = 512 * 1024
 
 
-def _truncate(content: str, limit: int, label: str) -> str:
+def truncate(content: str, limit: int, label: str) -> str:
     """Keep the head and the tail of ``content`` inside ``limit`` bytes.
 
-    >>> _truncate("abc", 100, "output")
+    >>> truncate("abc", 100, "output")
     'abc'
-    >>> _truncate("abcdefgh", 4, "output")
+    >>> truncate("abcdefgh", 4, "output")
     'ab\\n...\\n[output truncated: original 0 KB]\\n...\\ngh'
     """
     data = content.encode("utf-8")
@@ -41,9 +41,9 @@ def build_transcript(cells: Sequence[Mapping[str, Any]], question: str) -> str:
         cell_id = cell.get("cell_id", "")
         blocks.append(f"[{cell_type} cell_id={cell_id}]\n{cell.get('source', '')}")
         for output in cell.get("outputs", []):
-            content = _truncate(
+            content = truncate(
                 str(output.get("content", "")), OUTPUT_LIMIT_BYTES, "output"
             )
             blocks.append(f"[output]\n{content}")
     blocks.append(f"[user]\n{question.strip()}")
-    return _truncate("\n\n".join(blocks), REQUEST_LIMIT_BYTES, "request")
+    return truncate("\n\n".join(blocks), REQUEST_LIMIT_BYTES, "request")

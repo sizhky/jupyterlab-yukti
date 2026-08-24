@@ -1491,7 +1491,7 @@ wheels = [
 
 [[package]]
 name = "jupyterlab-yukti"
-version = "0.0.8"
+version = "0.0.9"
 source = { editable = "." }
 dependencies = [
     { name = "ipykernel", version = "6.31.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },

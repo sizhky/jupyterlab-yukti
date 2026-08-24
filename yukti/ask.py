@@ -5,7 +5,7 @@ privileges every later ``%%ask`` runs with.
 
 Both magics are orchestrators only. Parsing lives in ``stream``, validation in
 ``actions``, the transcript in ``context``, the privileges in ``settings``,
-tracing in ``trace``.
+running a cell in ``execute``, tracing in ``trace``.
 """
 
 import html
@@ -17,13 +17,26 @@ from IPython.core.error import UsageError
 from IPython.core.magic import Magics, cell_magic, line_cell_magic, magics_class
 from IPython.display import HTML, Markdown, display
 
-from .actions import action_line, tool_payload
+from .actions import (
+    CELL_OUTPUT,
+    INSERT_CELLS,
+    RUN_CELLS,
+    action_line,
+    tool_payload,
+)
 from .app_server import AppServer, tool_detail, tool_line
 from .comm import NotebookPrefixCache, register_prefix_comm
 from .context import build_transcript
+from .execute import run_source
 from .settings import DEFAULTS, help_text, parse_settings, summary
 from .stream import MessageStream
 from .trace import Trace
+
+
+# One turn may run a cell, read the output, fix the cell and run it again, so
+# the limit is loose. It exists because a model that keeps failing would
+# otherwise keep running code in the user's kernel.
+RUN_LIMIT = 20
 
 
 SPINNER = HTML(
@@ -201,6 +214,64 @@ class YuktiMagics(Magics):
                     if key:
                         tools[key] = handle
 
+                def send(payload: dict[str, Any]) -> None:
+                    trace.write("notebook_send", payload)
+                    comm.send({**payload, "request_id": request_id})
+
+                # The cells Yukti inserted in this turn, by the cell_id the
+                # notebook adopted. The kernel mints that id, so it can name a
+                # cell it created without an answer from a frontend that never
+                # answers.
+                inserted: dict[str, Any] = {}
+                runs = 0
+
+                def allow_run(count: int) -> None:
+                    """Refuse a run past the limit before the notebook hears it.
+
+                    The refusal happens here and not in ``run_named``, because
+                    a cell that has already been told to look busy would keep
+                    that prompt with no output ever arriving.
+                    """
+                    nonlocal runs
+                    runs += count
+                    if runs > RUN_LIMIT:
+                        raise RuntimeError(
+                            f"Yukti runs at most {RUN_LIMIT} cells in one turn; "
+                            "answer with what you have"
+                        )
+
+                def run_named(named: list) -> str:
+                    """Run each named cell and say what every one of them printed.
+
+                    The notebook hears ``run_cells`` before the first run
+                    starts, so the cell shows a busy prompt while the kernel is
+                    inside it, and one ``cell_output`` after each run, so the
+                    outputs land in the cell that holds the source.
+
+                    The execution count is the one the ``%%ask`` cell is
+                    already using, because that run is this run: nothing else
+                    ran between them.
+
+                    Pro: the reader sees the output where the code is.
+                    Con: two cells then show the same count.
+                    """
+                    said = []
+                    for item in named:
+                        cell_id = item["cell_id"]
+                        outputs, printed = run_source(
+                            self.shell, inserted[cell_id]["source"]
+                        )
+                        send(
+                            {
+                                "type": CELL_OUTPUT,
+                                "cell_id": cell_id,
+                                "execution_count": self.shell.execution_count,
+                                "outputs": outputs,
+                            }
+                        )
+                        said.append(f"[cell_id {cell_id} printed]\n{printed}")
+                    return "\n".join(said)
+
                 def change_notebook(tool: str, arguments: Any) -> str:
                     """Apply one Codex tool call and say what the notebook got.
 
@@ -209,15 +280,33 @@ class YuktiMagics(Magics):
                     It still says ``finished``, because a result that only
                     says ``sent`` reads as pending and the model then streams
                     a message about waiting for a cell nobody can confirm.
+
+                    An insert reports the cell_id it minted, because that id is
+                    the only handle ``run_cells`` accepts.
                     """
-                    payload = tool_payload(tool, arguments, cells)
-                    trace.write("notebook_send", payload)
-                    comm.send({**payload, "request_id": request_id})
+                    payload = tool_payload(
+                        tool, arguments, cells, list(inserted.values())
+                    )
+                    if payload["type"] == RUN_CELLS:
+                        allow_run(len(payload["cells"]))
+                    send(payload)
                     # The call closes the block it followed, so the next
                     # message opens an output below this line.
                     stream.close()
                     line = action_line(payload)
                     show_line(line)
+                    if payload["type"] == RUN_CELLS:
+                        return f"{line}: finished\n{run_named(payload['cells'])}"
+                    if payload["type"] == INSERT_CELLS:
+                        for cell in payload["cells"]:
+                            inserted[cell["cell_id"]] = cell
+                        ids = ", ".join(cell["cell_id"] for cell in payload["cells"])
+                        return f"{line}: finished, cell_id {ids}"
+                    # A rewritten cell keeps its cell_id, so the next run of
+                    # that id must run the source the notebook now holds.
+                    for cell in payload["cells"]:
+                        if cell["cell_id"] in inserted:
+                            inserted[cell["cell_id"]]["source"] = cell["source"]
                     return f"{line}: finished"
 
                 try:

@@ -1,7 +1,8 @@
 import type { JupyterFrontEndPlugin } from '@jupyterlab/application';
 import { Clipboard } from '@jupyterlab/apputils';
-import type { Cell, ICellModel } from '@jupyterlab/cells';
+import type { Cell, CodeCell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
 import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
+import { PageConfig, PathExt, URLExt } from '@jupyterlab/coreutils';
 import {
   type ICell,
   type ILanguageInfoMetadata,
@@ -23,6 +24,10 @@ import {
 const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
 const ASK_CLASS = 'yukti-ask-cell';
+const EDIT_CLASS = 'yukti-edit-output';
+const EDITING_CLASS = 'yukti-editing';
+const AREA_CLASS = 'yukti-edit-area';
+const AREA_MAX_VH = 35;
 
 // The two wrappers, not the cell, because JupyterLab paints the cell itself
 // transparent while it is the active cell and would wipe the tint. The editor
@@ -39,6 +44,37 @@ const ASK_STYLE = `
   --jp-cell-editor-background:
     color-mix(in srgb, var(--jp-brand-color1) 10%, var(--jp-layout-color0));
   --jp-cell-editor-active-background: var(--jp-cell-editor-background);
+}
+.${ASK_CLASS} .jp-OutputArea-child {
+  position: relative;
+}
+.${ASK_CLASS} .${EDIT_CLASS} {
+  position: absolute;
+  top: 0;
+  right: 0;
+  opacity: 0;
+  padding: 2px 5px;
+  border: var(--jp-border-width) solid var(--jp-border-color2);
+  border-radius: var(--jp-border-radius);
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+  line-height: 1;
+  cursor: pointer;
+}
+.${ASK_CLASS} .jp-OutputArea-child:hover .${EDIT_CLASS},
+.${ASK_CLASS} .${EDIT_CLASS}:focus {
+  opacity: 1;
+}
+.${ASK_CLASS} .${EDITING_CLASS} > .jp-OutputArea-output {
+  display: none;
+}
+.${ASK_CLASS} .${AREA_CLASS} {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  font-family: var(--jp-code-font-family);
+  font-size: var(--jp-code-font-size);
 }
 `;
 
@@ -99,6 +135,63 @@ function serializeCell(cellId: string, cell: ICell): SerializedCell {
   return serialized;
 }
 
+/**
+ * Find a cell by the id the kernel minted for it.
+ *
+ * ``insert_cells`` carries that id, and ``createCell`` in ``@jupyter/ydoc``
+ * adopts it, so both sides name the same cell without the frontend answering
+ * a comm the kernel cannot read while it is busy with the ``%%ask`` cell.
+ *
+ * The caller passes the cells below the question, so a run reaches only a cell
+ * Yukti inserted, never one the reader wrote above it.
+ */
+function findCell(cells: readonly Cell[], cellId: unknown): Cell | null {
+  if (typeof cellId !== 'string') {
+    return null;
+  }
+  return cells.find(widget => widget.model.id === cellId) ?? null;
+}
+
+/**
+ * Show that the kernel is inside this cell.
+ *
+ * The prompt is the only sign a reader gets, because the run belongs to the
+ * ``%%ask`` cell's ``execute_request`` and this cell has none of its own.
+ */
+function markRunning(cell: Cell): void {
+  if (cell.model.type !== 'code') {
+    return;
+  }
+  (cell.model as ICodeCellModel).outputs.clear();
+  (cell as CodeCell).setPrompt('*');
+}
+
+/**
+ * Paint one run's outputs into the cell that holds the source.
+ *
+ * The outputs are nbformat, so an image, a figure and a traceback all render
+ * the way JupyterLab renders them for an ordinary run. The execution count is
+ * the one the ``%%ask`` cell is using, because that is the request this run
+ * happened inside.
+ *
+ * Pro: the reader sees the output under the code, not in the question.
+ * Con: two cells then show the same count.
+ */
+function showRun(cell: Cell, outputs: unknown, count: unknown): void {
+  if (cell.model.type !== 'code' || !Array.isArray(outputs)) {
+    return;
+  }
+  const model = cell.model as ICodeCellModel;
+  model.outputs.clear();
+  outputs.forEach(value => {
+    const output = value as Record<string, unknown> | null;
+    if (output != null && typeof output.output_type === 'string') {
+      model.outputs.add(output as unknown as IOutput);
+    }
+  });
+  model.executionCount = typeof count === 'number' ? count : null;
+}
+
 const plugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:notebook-prefix',
   autoStart: true,
@@ -145,8 +238,10 @@ const plugin: JupyterFrontEndPlugin<void> = {
             const cellType = candidate.cell_type;
             return (
               (cellType === 'code' || cellType === 'markdown') &&
-              typeof candidate.source === 'string'
+              typeof candidate.source === 'string' &&
+              typeof candidate.cell_id === 'string'
             ) ? {
+              id: candidate.cell_id,
               cell_type: cellType,
               source: candidate.source,
               metadata: cellType === 'code' ? { trusted: false } : {}
@@ -171,19 +266,43 @@ const plugin: JupyterFrontEndPlugin<void> = {
           notebook.activeCellIndex = currentIndex + 1;
           return;
         }
+        if (data.type === 'run_cells' && Array.isArray(data.cells)) {
+          const below = notebook.widgets.slice(currentIndex + 1);
+          data.cells.forEach(value => {
+            const named = value as Record<string, unknown> | null;
+            const cell = findCell(below, named?.cell_id);
+            if (cell != null) {
+              markRunning(cell);
+            }
+          });
+          return;
+        }
+        if (data.type === 'cell_output') {
+          const below = notebook.widgets.slice(currentIndex + 1);
+          const cell = findCell(below, data.cell_id);
+          if (cell != null) {
+            showRun(cell, data.outputs, data.execution_count);
+          }
+          return;
+        }
         if (data.type !== 'replace_cells' || !Array.isArray(data.cells)) {
           return;
         }
 
-        const prefix = new Map(
-          notebook.widgets.slice(0, currentIndex).map(widget => [widget.model.id, widget])
+        // Every cell but the question: the cells above it are the transcript
+        // Codex read, and the cells below are the ones it inserted in this
+        // turn, which it rewrites when a run of one of them fails.
+        const editable = new Map(
+          notebook.widgets
+            .filter((_widget, index) => index !== currentIndex)
+            .map(widget => [widget.model.id, widget])
         );
         const edits = data.cells.map(value => {
           if (typeof value !== 'object' || value == null || Array.isArray(value)) {
             return null;
           }
           const replacement = value as Record<string, unknown>;
-          const widget = prefix.get(replacement.cell_id as string);
+          const widget = editable.get(replacement.cell_id as string);
           return typeof replacement.source === 'string' && widget != null
             ? { widget, source: replacement.source }
             : null;
@@ -379,6 +498,134 @@ const skipAskPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
+/**
+ * Edit one output of an ``%%ask`` cell in place.
+ *
+ * The block is saved as a single markdown output, so the notebook shows the
+ * new text and ``serializeCell`` sends that same text to the next turn. It
+ * stays an ordinary output, so Codex reads the correction as the answer this
+ * cell holds.
+ *
+ * Enter, in every combination but Alt+Enter, closes the box and saves, and so
+ * does leaving it; Alt+Enter types a line and Escape cancels. Every keystroke
+ * stops at the box: JupyterLab reads keydown while the event bubbles, so this
+ * is what keeps Shift+Enter from running the cell and ``dd`` from deleting it.
+ *
+ * The box opens as tall as the output it replaces, and never taller than
+ * ``AREA_MAX_VH`` percent of the window, so a long answer stays scrollable
+ * instead of pushing the notebook off screen.
+ *
+ * Pro: a wrong answer is corrected where it is read, and the .ipynb keeps it
+ * like any other output.
+ * Con: the block loses its other mime types, so an edited tool call becomes a
+ * plain fenced block, and running the cell again clears the correction.
+ */
+function editOutput(model: ICodeCellModel, index: number, host: Element): void {
+  const outputs = model.outputs;
+  const output = outputs.get(index);
+  if (output == null) {
+    return;
+  }
+  const shown = host.querySelector('.jp-OutputArea-output');
+  const tall = Math.round(shown?.getBoundingClientRect().height ?? 0);
+  const area = document.createElement('textarea');
+  area.className = AREA_CLASS;
+  area.value = serializeOutput(output.toJSON()).content;
+  area.style.height = `min(max(${tall}px, 2em), ${AREA_MAX_VH}vh)`;
+  host.classList.add(EDITING_CLASS);
+  host.appendChild(area);
+  area.focus();
+
+  // The blur that follows a save or a cancel must not write a second time.
+  const finish = (save: boolean): void => {
+    if (!host.classList.contains(EDITING_CLASS)) {
+      return;
+    }
+    host.classList.remove(EDITING_CLASS);
+    const written = area.value;
+    area.remove();
+    if (save) {
+      outputs.set(index, {
+        output_type: 'display_data',
+        data: { 'text/markdown': written },
+        metadata: {}
+      });
+    }
+  };
+
+  area.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      finish(false);
+      return;
+    }
+    if (event.key === 'Enter' && !event.altKey) {
+      event.preventDefault();
+      finish(true);
+    }
+  });
+  area.addEventListener('blur', () => finish(true));
+}
+
+/**
+ * Offer one pencil on the output block the pointer is over, inside ``%%ask``
+ * cells only.
+ *
+ * One button follows the pointer instead of one button per block, because an
+ * output area rebuilds its children while the turn streams and would drop
+ * every button it holds.
+ *
+ * Pro: nothing to keep in step with the outputs, and no button reaches a cell
+ * that never asked.
+ * Con: the pencil sits over the top right of the block, so it can cover a
+ * word until the pointer leaves.
+ */
+function trackOutputEdits(panel: NotebookPanel): void {
+  const pencil = document.createElement('button');
+  pencil.className = EDIT_CLASS;
+  pencil.textContent = '✎';
+  pencil.title = 'Edit this output';
+  pencil.setAttribute('aria-label', 'Edit this output');
+
+  panel.node.addEventListener('mouseover', event => {
+    const target = event.target as Element | null;
+    const host = target?.closest('.jp-OutputArea-child') ?? null;
+    if (host == null || host.closest(`.${ASK_CLASS}`) == null) {
+      return;
+    }
+    if (host !== pencil.parentElement) {
+      host.appendChild(pencil);
+    }
+  });
+
+  pencil.addEventListener('click', () => {
+    const host = pencil.parentElement;
+    const area = host?.parentElement;
+    if (host == null || area == null) {
+      return;
+    }
+    const blocks = Array.from(area.children).filter(node =>
+      node.classList.contains('jp-OutputArea-child')
+    );
+    const index = blocks.indexOf(host);
+    const cell = panel.content.widgets.find(widget => widget.node.contains(host));
+    if (index >= 0 && cell != null && cell.model.type === 'code') {
+      editOutput(cell.model as ICodeCellModel, index, host);
+    }
+  });
+}
+
+const editOutputPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:edit-ask-output',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (_app, tracker: INotebookTracker) => {
+    tracker.widgetAdded.connect((_sender, panel) => {
+      trackOutputEdits(panel);
+    });
+  }
+};
+
 type CopyPart = 'input' | 'output' | 'both';
 
 const COPY_COMMANDS: { id: string; label: string; part: CopyPart }[] = [
@@ -497,4 +744,77 @@ const copyPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-export default [plugin, plainTextPlugin, skipAskPlugin, copyPlugin];
+/**
+ * The folder that holds the notebook, ``''`` at the server's root.
+ */
+function notebookDir(panel: NotebookPanel | null): string | null {
+  return panel == null ? null : PathExt.dirname(panel.context.path);
+}
+
+/**
+ * Two File menu entries for the current notebook's folder, which
+ * ``schema/file-menu.json`` places under New.
+ *
+ * "Open in CWD" opens ``<base>/tree/<folder>``, the address Jupyter Notebook
+ * serves its file browser on, in a second browser tab, so the notebook keeps
+ * its own tab and its kernel. "New Notebook Here" writes an untitled notebook
+ * beside the current one and opens it on the same kernel name, because a
+ * sibling notebook almost always wants the environment its neighbour uses.
+ *
+ * Pro: both replace walking the file browser down to the folder the notebook
+ * already runs in, and neither needs a running kernel.
+ * Con: JupyterLab serves the file browser on ``/lab/tree/`` instead, so the
+ * link answers with a redirect, or a 404 on a server without Jupyter Notebook.
+ */
+const fileMenuPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:file-menu',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (app, tracker: INotebookTracker) => {
+    app.commands.addCommand('yukti:open-in-cwd', {
+      label: 'Open in CWD',
+      caption: "Open this notebook's folder in a new browser tab",
+      isEnabled: () => tracker.currentWidget != null,
+      execute: () => {
+        const dir = notebookDir(tracker.currentWidget);
+        if (dir == null) {
+          return;
+        }
+        const base = PageConfig.getBaseUrl();
+        window.open(URLExt.join(base, 'tree', URLExt.encodeParts(dir)), '_blank');
+      }
+    });
+
+    app.commands.addCommand('yukti:new-notebook-here', {
+      label: 'New Notebook Here',
+      caption: "Create a notebook beside this one, in the same folder",
+      isEnabled: () => tracker.currentWidget != null,
+      execute: async () => {
+        const panel = tracker.currentWidget;
+        const dir = notebookDir(panel);
+        if (panel == null || dir == null) {
+          return;
+        }
+        const created = await app.serviceManager.contents.newUntitled({
+          path: dir,
+          type: 'notebook'
+        });
+        const kernel = panel.sessionContext.session?.kernel?.name;
+        await app.commands.execute('docmanager:open', {
+          path: created.path,
+          factory: 'Notebook',
+          kernel: kernel == null ? undefined : { name: kernel }
+        });
+      }
+    });
+  }
+};
+
+export default [
+  plugin,
+  plainTextPlugin,
+  skipAskPlugin,
+  editOutputPlugin,
+  copyPlugin,
+  fileMenuPlugin
+];

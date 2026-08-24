@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from .actions import TOOL_SPECS
+from .actions import tool_specs
 from .settings import APPROVAL_PARAMS, DEFAULTS
 
 
@@ -34,12 +34,23 @@ Use markdown cells for prose, formulas, and documentation. Use code cells for
 executable source. Write inline formulas as $...$ and display formulas as $$...$$.
 Use transcript cell_id values for replace_cells."""
 
+# run_cells is what makes one turn agentic, so the rules say when to reach for
+# it: the model needs the output, not the reader.
+RUN_RULES = """
+Every insert_cells call returns the cell_id the notebook gave the cell. Call
+run_cells with that cell_id when the answer depends on what the code prints, or
+when you must see that the code works. The result is what the cell printed, and
+the notebook shows the same run in the cell itself, so never paste the output
+into another cell and never claim an output you did not read. If the run fails,
+call replace_cells with the same cell_id to fix that cell, then run it again;
+never leave a broken cell behind and insert a second one next to it."""
 
-def base_instructions(tools: bool) -> str:
+
+def base_instructions(tools: bool, run: bool = False) -> str:
     """Yukti's own instruction, with or without permission to touch the disk.
 
     The cell tools are always there, so ``tools`` governs the shell and the
-    file system only.
+    file system only, and ``run`` governs the kernel.
 
     >>> base_instructions(False).splitlines()[1].endswith("do not read files.")
     True
@@ -47,8 +58,14 @@ def base_instructions(tools: bool) -> str:
     True
     >>> "insert_cells" in base_instructions(False)
     True
+    >>> "run_cells" in base_instructions(False)
+    False
+    >>> "run_cells" in base_instructions(False, run=True)
+    True
     """
-    return PREAMBLE + (TOOLS if tools else NO_TOOLS) + ACTION_RULES
+    return PREAMBLE + (TOOLS if tools else NO_TOOLS) + ACTION_RULES + (
+        RUN_RULES if run else ""
+    )
 
 
 # Approval requests reach Yukti only when ``%%yukti`` routes approvals away
@@ -396,11 +413,13 @@ class AppServer:
             **APPROVAL_PARAMS[self.settings["approvals"]],
             "sandbox": self.settings["sandbox"],
             "modelProvider": "openai",
-            "baseInstructions": base_instructions(self.settings["tools"]),
+            "baseInstructions": base_instructions(
+                self.settings["tools"], self.settings.get("run", False)
+            ),
             "developerInstructions": "",
             # The notebook tools run in this process, not in the sandbox, so
             # they stay available in every permission profile.
-            "dynamicTools": TOOL_SPECS,
+            "dynamicTools": tool_specs(self.settings.get("run", False)),
             # project_doc_max_bytes stays 0 in every mode, so an AGENTS.md in
             # the working directory never competes with Yukti's instruction.
             "config": {

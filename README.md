@@ -78,6 +78,7 @@ approvals: auto_review
 - `sandbox`: `read-only`, `workspace-write`, or `danger-full-access`
 - `cwd`: the directory Codex works in, or empty for a disposable one
 - `network`, `tools`: `on` or `off`
+- `run`: `on` or `off`, whether Yukti runs the code cells it inserts
 - `writable_roots`: extra writable directories, separated by commas
 - `approvals`: `never`, or `auto_review` to let a Codex subagent decide
 
@@ -86,6 +87,28 @@ one line per command and per file it changes. A notebook cannot show an approval
 prompt, so Yukti accepts any approval request that still reaches it: the sandbox
 and the working directory remain the real limits. Project instruction files stay
 off in every profile, so an `AGENTS.md` never competes with Yukti's instruction.
+
+## Let Yukti run the cells it writes
+
+Yukti runs a code cell it has just inserted and reads what that cell printed, so
+one question can end in a cell that works instead of a cell that looks right. The
+run appears where the code is: the prompt shows `[*]` while the kernel is inside
+the cell, and the outputs land under it. If the run fails, Yukti reads the
+traceback, rewrites the cell, and runs it again.
+
+The code runs in your kernel, in the namespace your earlier cells built, so it
+sees your variables and can change them. Yukti runs only the code cells it
+inserted in the same turn, never a cell of your own, and never a cell that starts
+with `%%ask` or `%%yukti`. One turn runs at most 20 cells.
+
+That cell holds no execute request of its own, so `input()` and live widgets do
+not work in it, and it shows the same execution count as the `%%ask` cell that
+ran it. Running is on by default, and one line turns it off:
+
+```python
+%%yukti
+run: off
+```
 
 ## See the exact Codex request
 
