@@ -955,24 +955,37 @@ function flagPlugin(id: string, flag: CellFlag): JupyterFrontEndPlugin<void> {
 /**
  * Freeze and unfreeze the active cell.
  *
- * Freezing writes ``editable: false``, so JupyterLab turns the editor
- * read-only, ``trackAskCells`` tints the cell, and ``skipAskOnBulkRun`` leaves
- * it out of every Run All. Unfreezing deletes the key instead of writing
- * ``true``, so an unfrozen cell saves the same nbformat it had before.
+ * Freezing writes ``editable: false`` and ``deletable: false``, so JupyterLab
+ * turns the editor read-only and refuses to delete or cut the cell,
+ * ``trackAskCells`` tints it, and ``skipAskOnBulkRun`` leaves it out of every
+ * Run All. Unfreezing deletes both keys instead of writing ``true``, so an
+ * unfrozen cell saves the same nbformat it had before.
  *
- * Pro: an expensive cell keeps its output through every run path, and the
- * freeze travels with the .ipynb.
+ * Pro: an expensive cell keeps its output through every run path and through
+ * a stray delete, and the freeze travels with the .ipynb.
  * Con: a frozen cell still runs from the debugger's own entry points and from
  * any code that calls the kernel directly, because ``blockFrozenRuns`` guards
- * ``CodeCell.execute`` only.
+ * ``CodeCell.execute`` only. A cut of many cells drops the others and leaves
+ * the frozen one behind, which reads as a failed cut until you look.
  */
 const freezePlugin = flagPlugin('yukti:freeze-cell', {
   command: 'yukti:toggle-freeze',
   read: isFrozen,
-  write: (cell, on) =>
-    on
-      ? cell.sharedModel.setMetadata('editable', false)
-      : cell.sharedModel.deleteMetadata('editable'),
+  // ``deletable`` travels with ``editable``, because a frozen cell that one
+  // Backspace still removes keeps nothing. JupyterLab reads both flags itself:
+  // ``deleteCells`` and ``cut`` skip a cell whose ``deletable`` is false, so
+  // the trash button, the ``dd`` shortcut and the Edit menu all leave it in
+  // place. Unfreezing deletes both keys, and deleting a key that is not there
+  // is a no-op, so a cell frozen before this change unfreezes cleanly.
+  write: (cell, on) => {
+    for (const key of ['editable', 'deletable']) {
+      if (on) {
+        cell.sharedModel.setMetadata(key, false);
+      } else {
+        cell.sharedModel.deleteMetadata(key);
+      }
+    }
+  },
   icon: frozen => (frozen ? PADLOCKS.on : PADLOCKS.off),
   label: frozen => (frozen ? 'Unfreeze Cell' : 'Freeze Cell'),
   caption: frozen =>
