@@ -65,9 +65,9 @@ function tint(cls: string, color: string): string {
 // more. Frozen comes last, so freezing an ``%%ask`` cell shows it as frozen.
 const ASK_STYLE = tint(ASK_CLASS, 'var(--jp-error-color1)') +
   tint(FROZEN_CLASS, 'var(--jp-brand-color1)') + `
-.${HIDDEN_CLASS} .jp-Cell-inputWrapper,
-.${HIDDEN_CLASS} .jp-Cell-outputWrapper {
-  opacity: 0.5;
+.${HIDDEN_CLASS} {
+  outline: 2px dashed var(--jp-border-color0);
+  outline-offset: -2px;
 }
 .${ASK_CLASS} .jp-OutputArea-child {
   position: relative;
@@ -985,7 +985,9 @@ const freezePlugin = flagPlugin('yukti:freeze-cell', {
  * Keep the active cell out of the next question's prompt, or put it back.
  *
  * Hiding adds the ``yukti-hidden`` tag, which drops the cell from the prefix
- * the ``%%ask`` cell sends and dims it on screen. Showing again drops the tag,
+ * the ``%%ask`` cell sends and draws a dashed outline around the cell. The
+ * outline marks the cell without touching its text, so a hidden cell stays as
+ * readable as every other one. Showing again drops the tag,
  * and drops the whole ``tags`` list when nothing else is in it, so a notebook
  * that never used tags saves the nbformat it had before.
  *
