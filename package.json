@@ -14,14 +14,18 @@
     "clean": "rimraf yukti_frontend/lib yukti_frontend/labextension yukti_frontend/tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@jupyter-notebook/tree": "^7.4.0",
     "@jupyterlab/application": "^4.4.0",
     "@jupyterlab/apputils": "^4.4.0",
     "@jupyterlab/cells": "^4.4.0",
     "@jupyterlab/codeeditor": "^4.4.0",
     "@jupyterlab/coreutils": "^6.4.0",
+    "@jupyterlab/filebrowser": "^4.4.0",
     "@jupyterlab/nbformat": "^4.4.0",
     "@jupyterlab/notebook": "^4.4.0",
-    "@jupyterlab/ui-components": "^4.4.0"
+    "@jupyterlab/settingregistry": "^4.4.0",
+    "@jupyterlab/ui-components": "^4.4.0",
+    "@lumino/widgets": "^2.9.0"
   },
   "devDependencies": {
     "@jupyterlab/builder": "^4.4.0",
@@ -31,6 +35,12 @@
   "jupyterlab": {
     "extension": true,
     "schemaDir": "yukti_frontend/schema",
-    "outputDir": "yukti_frontend/labextension"
+    "outputDir": "yukti_frontend/labextension",
+    "sharedPackages": {
+      "@jupyter-notebook/tree": {
+        "bundled": true,
+        "singleton": true
+      }
+    }
   }
 }

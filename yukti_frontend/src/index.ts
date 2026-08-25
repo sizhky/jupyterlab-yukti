@@ -14,13 +14,22 @@ import {
   isExecuteResult,
   isStream
 } from '@jupyterlab/nbformat';
-import { LabIcon } from '@jupyterlab/ui-components';
+import {
+  LabIcon,
+  fileIcon,
+  folderIcon,
+  notebookIcon
+} from '@jupyterlab/ui-components';
 import {
   INotebookTracker,
   NotebookActions,
   type Notebook,
   type NotebookPanel
 } from '@jupyterlab/notebook';
+import { INotebookTree } from '@jupyter-notebook/tree';
+import { IDefaultFileBrowser } from '@jupyterlab/filebrowser';
+import { ISettingRegistry } from '@jupyterlab/settingregistry';
+import { Widget } from '@lumino/widgets';
 
 const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
@@ -1100,6 +1109,339 @@ const fileMenuPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
+/**
+ * The plugin id, which is also the name ``schema/bookmarks.json`` carries, so
+ * the settings registry hands this plugin that schema.
+ */
+const BOOKMARKS_PLUGIN_ID = 'yukti:bookmarks';
+const BOOKMARK_COMMAND = 'yukti:toggle-bookmark';
+
+/**
+ * The Bookmarks tab and its two buttons per row.
+ *
+ * The rules copy the file listing's own spacing and lean on theme variables
+ * only, so the tab reads as one more section of the tree page in the light and
+ * in the dark theme. The remove button stays invisible until the row is
+ * hovered or focused, so a still list shows paths and nothing else, and a
+ * keyboard reaches the button all the same.
+ */
+const BOOKMARK_STYLE = `
+.yukti-Bookmarks {
+  overflow: auto;
+  background: var(--jp-layout-color1);
+}
+.yukti-Bookmarks-empty {
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size1);
+  margin: 0;
+  padding: 12px 16px;
+}
+.yukti-Bookmarks-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.yukti-Bookmark {
+  display: flex;
+  align-items: center;
+}
+.yukti-Bookmark:hover {
+  background: var(--jp-layout-color2);
+}
+.yukti-Bookmark button {
+  background: none;
+  border: none;
+  color: var(--jp-ui-font-color1);
+  cursor: pointer;
+  font-family: var(--jp-ui-font-family);
+  font-size: var(--jp-ui-font-size1);
+}
+.yukti-Bookmark-open {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 8px;
+  text-align: left;
+}
+.yukti-Bookmark-icon {
+  display: flex;
+  flex: 0 0 auto;
+}
+.yukti-Bookmark-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.yukti-Bookmark-dir {
+  color: var(--jp-ui-font-color2);
+  flex: 1 1 auto;
+  font-size: var(--jp-ui-font-size0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.yukti-Bookmark-drop {
+  flex: 0 0 auto;
+  font-size: var(--jp-ui-font-size2);
+  line-height: 1;
+  opacity: 0;
+  padding: 2px 10px;
+}
+.yukti-Bookmark:hover .yukti-Bookmark-drop,
+.yukti-Bookmark-drop:focus {
+  opacity: 1;
+}
+`;
+
+/**
+ * One star, filled while the path is bookmarked.
+ *
+ * The glyph repeats the cell buttons' 16 px box and their ``jp-icon3`` class,
+ * so the theme paints every yukti button the same grey.
+ */
+function starIcon(filled: boolean): LabIcon {
+  const path =
+    'M8.0 1.5 9.8 6.0 14.6 6.3 10.9 9.3 12.1 14.0 8.0 11.4 3.9 14.0 ' +
+    '5.1 9.3 1.4 6.3 6.2 6.0Z';
+  return new LabIcon({
+    name: `yukti:bookmark-${filled ? 'on' : 'off'}`,
+    svgstr:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
+      `<path d="${path}" class="jp-icon3" ` +
+      (filled
+        ? 'fill="#616161"'
+        : 'style="fill:none" stroke="#616161" stroke-width="1.3" ' +
+          'stroke-linejoin="round"') +
+      '/></svg>'
+  });
+}
+
+// Both stars are built once, because ``LabIcon`` keys its instances by name
+// and warns about a second icon under a name it already holds.
+const STARS = { on: starIcon(true), off: starIcon(false) };
+
+/**
+ * The name and the folder a bookmark shows, and the glyph in front of them.
+ *
+ * A stored path that ends in a slash is a folder, which is the shape
+ * ``filebrowser:open-path`` already reads: it strips the slash and refuses a
+ * path that is no longer a directory. So the same one character carries the
+ * type here and gets checked there, and the setting stays a list of plain
+ * strings a reader can edit by hand.
+ */
+function bookmarkParts(path: string): {
+  name: string;
+  dir: string;
+  icon: LabIcon;
+} {
+  const isDir = path.endsWith('/');
+  const clean = isDir ? path.slice(0, -1) : path;
+  const icon = isDir
+    ? folderIcon
+    : clean.endsWith('.ipynb')
+      ? notebookIcon
+      : fileIcon;
+  return {
+    name: PathExt.basename(clean) || '/',
+    dir: PathExt.dirname(clean),
+    icon
+  };
+}
+
+/**
+ * One bookmark: a wide button that opens it, and a narrow one that drops it.
+ */
+function bookmarkRow(
+  path: string,
+  open: (path: string) => void,
+  drop: (path: string) => void
+): HTMLLIElement {
+  const { name, dir, icon } = bookmarkParts(path);
+  const row = document.createElement('li');
+  row.className = 'yukti-Bookmark';
+
+  const go = document.createElement('button');
+  go.className = 'yukti-Bookmark-open';
+  go.title = path;
+  const glyph = document.createElement('span');
+  glyph.className = 'yukti-Bookmark-icon';
+  icon.element({ container: glyph, width: '16px', height: '16px' });
+  const label = document.createElement('span');
+  label.className = 'yukti-Bookmark-name';
+  label.textContent = name;
+  const parent = document.createElement('span');
+  parent.className = 'yukti-Bookmark-dir';
+  parent.textContent = dir;
+  go.append(glyph, label, parent);
+  go.addEventListener('click', () => open(path));
+
+  const remove = document.createElement('button');
+  remove.className = 'yukti-Bookmark-drop';
+  remove.title = 'Remove this bookmark';
+  remove.setAttribute('aria-label', `Remove the bookmark for ${path}`);
+  remove.textContent = '×';
+  remove.addEventListener('click', () => drop(path));
+
+  row.append(go, remove);
+  return row;
+}
+
+/**
+ * The Bookmarks tab, and the call that fills it from a list of paths.
+ *
+ * ``draw`` rebuilds every row, because the list is a handful of items and a
+ * rebuild costs less than the code that would patch it in place.
+ */
+function bookmarkList(
+  open: (path: string) => void,
+  drop: (path: string) => void
+): { widget: Widget; draw: (paths: string[]) => void } {
+  const widget = new Widget();
+  widget.addClass('yukti-Bookmarks');
+  const draw = (paths: string[]): void => {
+    widget.node.replaceChildren();
+    if (paths.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'yukti-Bookmarks-empty';
+      empty.textContent =
+        'No bookmarks yet. Right-click a file or a folder under Files, ' +
+        'then choose Bookmark.';
+      widget.node.appendChild(empty);
+      return;
+    }
+    const list = document.createElement('ul');
+    list.className = 'yukti-Bookmarks-list';
+    for (const path of paths) {
+      list.appendChild(bookmarkRow(path, open, drop));
+    }
+    widget.node.appendChild(list);
+  };
+  return { widget, draw };
+}
+
+/**
+ * A Bookmarks tab beside Files and Running on the ``/tree/`` page.
+ *
+ * The tab is one more widget in the tab panel Jupyter Notebook builds for that
+ * page and hands out as ``INotebookTree``, so it is added the way the Running
+ * tab is added, and it inherits the panel's own look and keyboard handling.
+ * Clicking a row calls ``filebrowser:open-path``, which changes the folder for
+ * a directory and opens the document for a file, so one call covers both and
+ * reports the path itself when it is gone.
+ *
+ * The paths live in this plugin's settings, so they survive a restart, reach
+ * every browser the same server serves, and stay editable by hand under
+ * Settings, Advanced Settings Editor.
+ *
+ * Pro: a deep working folder and a notebook opened every morning are each one
+ * click from the page the server already opens on.
+ * Con: ``INotebookTree`` is a Jupyter Notebook token, so in JupyterLab it
+ * arrives as ``null`` and the whole plugin stops, tab, command and all. The
+ * toolbar star also reads the selection, and no signal reports a selection
+ * made by keyboard, so after arrow keys the star can name the wrong state
+ * until the next click. The menu entry reads the selection when it opens, so
+ * it is always right.
+ */
+const bookmarksPlugin: JupyterFrontEndPlugin<void> = {
+  id: BOOKMARKS_PLUGIN_ID,
+  autoStart: true,
+  requires: [IDefaultFileBrowser, ISettingRegistry],
+  optional: [INotebookTree],
+  activate: async (
+    app,
+    browser: IDefaultFileBrowser,
+    registry: ISettingRegistry,
+    tree: INotebookTree | null
+  ) => {
+    if (tree == null) {
+      return;
+    }
+    const style = document.createElement('style');
+    style.textContent = BOOKMARK_STYLE;
+    document.head.appendChild(style);
+
+    const settings = await registry.load(BOOKMARKS_PLUGIN_ID);
+    const read = (): string[] =>
+      (settings.get('bookmarks').composite as string[] | undefined) ?? [];
+    const write = (paths: string[]): Promise<void> =>
+      settings.set('bookmarks', paths);
+
+    const { commands } = app;
+
+    /**
+     * The path the command acts on: the first selected item, or, with nothing
+     * selected, the folder the file browser shows.
+     */
+    const target = (): string => {
+      const [item] = Array.from(browser.selectedItems());
+      if (item == null) {
+        return `${browser.model.path}/`;
+      }
+      return item.type === 'directory' ? `${item.path}/` : item.path;
+    };
+
+    const open = async (path: string): Promise<void> => {
+      await commands.execute('filebrowser:open-path', { path });
+      // A folder changed the file browser, which sits under another tab, so
+      // the Files tab is raised to show what the click did. A file opened a
+      // page of its own, so this tab stays where it is.
+      if (path.endsWith('/') && commands.hasCommand('filebrowser:activate')) {
+        await commands.execute('filebrowser:activate');
+      }
+    };
+
+    const { widget, draw } = bookmarkList(
+      path => void open(path),
+      path => void write(read().filter(kept => kept !== path))
+    );
+    widget.id = 'yukti-bookmarks-tree';
+    widget.title.label = 'Bookmarks';
+    widget.title.icon = STARS.on;
+    widget.node.setAttribute('role', 'region');
+    widget.node.setAttribute('aria-label', 'Bookmarks Section');
+    tree.addWidget(widget);
+    tree.tabBar.addTab(widget.title);
+
+    draw(read());
+    settings.changed.connect(() => {
+      draw(read());
+      commands.notifyCommandChanged(BOOKMARK_COMMAND);
+    });
+
+    const marked = (): boolean => read().includes(target());
+    commands.addCommand(BOOKMARK_COMMAND, {
+      label: () => (marked() ? 'Remove Bookmark' : 'Bookmark'),
+      caption: () =>
+        marked()
+          ? 'Drop this path from the Bookmarks tab'
+          : 'Pin this path to the Bookmarks tab',
+      icon: () => (marked() ? STARS.on : STARS.off),
+      isToggled: marked,
+      execute: async () => {
+        const path = target();
+        const paths = read();
+        await write(
+          paths.includes(path)
+            ? paths.filter(kept => kept !== path)
+            : [...paths, path]
+        );
+      }
+    });
+
+    // The star names the selection, and the selection changes on a click and
+    // on every folder change, so the button is told to read itself again.
+    browser.model.pathChanged.connect(() => {
+      commands.notifyCommandChanged(BOOKMARK_COMMAND);
+    });
+    browser.node.addEventListener('click', () => {
+      commands.notifyCommandChanged(BOOKMARK_COMMAND);
+    });
+  }
+};
+
 export default [
   plugin,
   plainTextPlugin,
@@ -1108,5 +1450,6 @@ export default [
   copyPlugin,
   freezePlugin,
   hidePlugin,
-  fileMenuPlugin
+  fileMenuPlugin,
+  bookmarksPlugin
 ];

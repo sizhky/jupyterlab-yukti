@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "title": "Yukti Bookmarks",
+  "description": "Folders and files pinned to the Bookmarks tab of the tree page.",
+  "jupyter.lab.menus": {
+    "context": [
+      {
+        "command": "yukti:toggle-bookmark",
+        "selector": ".jp-DirListing-item",
+        "rank": 5
+      }
+    ]
+  },
+  "jupyter.lab.toolbars": {
+    "FileBrowser": [
+      {
+        "name": "yukti-bookmark",
+        "label": "",
+        "command": "yukti:toggle-bookmark",
+        "rank": 985
+      }
+    ]
+  },
+  "properties": {
+    "bookmarks": {
+      "title": "Bookmarks",
+      "description": "One path per bookmark, each relative to the server root. A path that ends in a slash is a folder, and every other path is a file.",
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    }
+  },
+  "additionalProperties": false,
+  "type": "object"
+}
