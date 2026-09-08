@@ -1,0 +1,4 @@
+t1: ask-magic -> output-boundary limits step=s1 phase=output note="→ truncate(output, 8 KB)" message=sync pair=p-output code="[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)"
+t2: output-boundary -> transcript returns step=s2 phase=output note="← bounded output" message=sync pair=p-output code="[truncate](yukti/context.py?symbol=truncate&kind=function)"
+t3: transcript -> app-server limits step=s3 phase=request note="→ truncate(request, 512 KB)" message=sync pair=p-request code="[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)"
+t4: app-server -> transcript returns step=s4 phase=request note="← bounded request" message=sync pair=p-request code="[truncate](yukti/context.py?symbol=truncate&kind=function)"

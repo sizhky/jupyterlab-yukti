@@ -1,0 +1,89 @@
+@graph id=yukti-ask title="One %%ask turn"
+hover_attrs=description,code
+pair_by=pair
+edge_color_by=step
+edge_label_from=note
+default_view=ask
+
+@sources
+nodes=kg.nodes
+attrs=kg.attrs
+ask:
+	edges=kg.edges
+transcript:
+	edges=kg.transcript.edges
+code_source=../../
+
+@relations
+sends color=relation.sends
+takes color=relation.takes
+builds color=relation.builds
+streams color=relation.streams
+returns color=relation.returns
+limits color=relation.limits
+
+@views
+ask:
+	source=ask
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=frontend,prefix-cache,ask-magic,transcript,output-boundary,app-server,ask-cell
+	sequence_message=message
+	color_by=step
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="One %%ask request crosses the Comm boundary once. NotebookPrefixCache holds the prefix until YuktiMagics.ask takes it, then build_transcript gives the App Server one bounded string."
+	slides:
+		receive: Steps 1 to 2 — receive the prefix
+			nodes=frontend,prefix-cache,ask-magic
+			caption="The frontend sends one notebook_prefix message containing the request id, cells and mode. NotebookPrefixCache stores the message, and %%ask takes it when the cell starts."
+			build: Steps 3 to 4 — build the prompt
+				nodes=ask-magic,transcript
+				caption="%%ask passes the cells and question to build_transcript. Each cell becomes a labelled block; each output is bounded before it joins the request."
+			answer: Steps 5 to 6 — stream the answer
+				nodes=app-server,ask-cell
+				caption="The App Server runs the Codex turn and sends deltas to the ask cell. Yukti closes the Comm after the turn, whether the answer streamed or not."
+transcript:
+	source=transcript
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=ask-magic,transcript,output-boundary,app-server
+	sequence_message=message
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="build_transcript keeps the model input finite. It truncates each output at OUTPUT_LIMIT_BYTES, then truncates the joined request at REQUEST_LIMIT_BYTES."
+	slides:
+		outputs: Steps 1 to 3 — bound cell output
+			nodes=ask-magic,transcript,output-boundary
+			caption="Every notebook output passes through truncate before it enters the transcript. The helper keeps the head and tail and labels the omission."
+			request: Steps 4 to 5 — bound the whole request
+			nodes=transcript,app-server
+			caption="After cells and the question are joined, build_transcript applies the larger request limit. The App Server receives the result, not the original unbounded text."
+
+frontend: Notebook frontend
+	description=The JupyterLab extension sends the cells above the question through the notebook_prefix Comm message.
+	code=[notebook_prefix message](yukti_frontend/src/index.ts?symbol=plugin&kind=variable)
+prefix-cache: Prefix cache
+	description=The kernel-side Comm target stores one valid notebook_prefix message until %%ask consumes it.
+	code=[NotebookPrefixCache.open](yukti/comm.py?symbol=NotebookPrefixCache.open&kind=method)
+ask-magic: %%ask magic
+	description=The cell magic takes the cached prefix, builds the transcript, starts AppServer, and closes the Comm in the cleanup path.
+	code=[YuktiMagics.ask](yukti/ask.py?symbol=YuktiMagics.ask&kind=method)
+transcript: Transcript builder
+	description=The builder writes labelled cell and output blocks, appends the question, and applies the request limit.
+	code=[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)
+output-boundary: Output limit
+	description=The shared helper bounds one output or the complete request by UTF-8 byte count, keeping both ends of truncated text.
+	code=[truncate](yukti/context.py?symbol=truncate&kind=function)
+app-server: Codex App Server
+	description=The local server owns the Codex protocol turn and yields answer deltas to %%ask.
+	code=[AppServer.run](yukti/app_server.py?symbol=AppServer.run&kind=method)
+ask-cell: %%ask output
+	description=The cell displays streamed Markdown blocks and closes its spinner and Comm when the turn finishes.
+	code=[YuktiMagics.ask](yukti/ask.py?symbol=YuktiMagics.ask&kind=method)

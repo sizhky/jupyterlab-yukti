@@ -1,0 +1,7 @@
+e1: frontend -> prefix-cache sends step=s1 note="→ notebook_prefix" message=sync pair=p-prefix code="[notebook_prefix message](yukti_frontend/src/index.ts?symbol=plugin&kind=variable)"
+e2: prefix-cache -> ask-magic takes step=s2 note="→ take()" message=sync pair=p-take code="[NotebookPrefixCache.take](yukti/comm.py?symbol=NotebookPrefixCache.take&kind=method)"
+e3: ask-magic -> transcript builds step=s3 note="→ build_transcript(cells, question)" message=sync pair=p-transcript code="[YuktiMagics.ask](yukti/ask.py?symbol=YuktiMagics.ask&kind=method)"
+e4: transcript -> output-boundary limits step=s4 note="→ per-output and request limits" message=sync pair=p-limit code="[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)"
+e5: output-boundary -> app-server returns step=s5 note="← bounded transcript" message=sync pair=p-server code="[truncate](yukti/context.py?symbol=truncate&kind=function)"
+e6: app-server -> ask-cell streams step=s6 note="→ answer deltas" message=async pair=p-answer code="[AppServer.run](yukti/app_server.py?symbol=AppServer.run&kind=method)"
+e7: ask-magic -> ask-cell returns step=s7 note="← rendered blocks" message=async pair=p-close code="[YuktiMagics.ask](yukti/ask.py?symbol=YuktiMagics.ask&kind=method)"

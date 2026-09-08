@@ -1,0 +1,7 @@
+frontend: Notebook frontend
+prefix-cache: Prefix cache
+ask-magic: %%ask magic
+transcript: Transcript builder
+output-boundary: Output limit
+app-server: Codex App Server
+ask-cell: %%ask output
