@@ -25,10 +25,11 @@ from .actions import (
     tool_payload,
 )
 from .app_server import AppServer, tool_detail, tool_line
+from .claude_code import ClaudeCode
 from .comm import NotebookPrefixCache, register_prefix_comm
 from .context import build_transcript
 from .execute import run_source
-from .settings import DEFAULTS, help_text, parse_settings, summary
+from .settings import DEFAULTS, changes, help_text, parse_settings, summary
 from .stream import MessageStream
 from .trace import Trace, read as read_trace
 
@@ -139,16 +140,22 @@ class YuktiMagics(Magics):
 
         An empty cell, ``%yukti`` and ``%%yukti help`` all show the help
         instead, so the vocabulary is one keystroke away from the mistake.
+        A settings cell names only what it changed; ``--verbose`` shows the
+        full table.
         """
-        if line.strip() in {"", "help"} and not (cell or "").strip():
+        option = line.strip()
+        if option in {"", "help"} and not (cell or "").strip():
             return Markdown(help_text(self.settings))
-        if line.strip():
-            raise UsageError("%%yukti takes no options; write settings in the cell body")
+        if option not in {"", "--verbose"}:
+            raise UsageError("%%yukti accepts only --verbose; write settings in the cell body")
+        before = self.settings
         try:
             self.settings = parse_settings(cell, self.settings)
         except ValueError as error:
             raise UsageError(str(error)) from None
-        return Markdown(summary(self.settings))
+        if option == "--verbose":
+            return Markdown(summary(self.settings))
+        return Markdown(changes(before, self.settings))
 
     @cell_magic
     def ask(self, line: str, cell: str) -> Any:
@@ -164,7 +171,8 @@ class YuktiMagics(Magics):
             # The dropdown decides the voice for this turn only, so the
             # settings ``%%yukti`` wrote stay untouched.
             settings = {**self.settings, "mode": mode} if mode else self.settings
-            with AppServer(root, settings) as server:
+            backend = ClaudeCode if settings.get("backend") == "claude" else AppServer
+            with backend(root, settings) as server:
                 if option == "--debug":
                     comm.close()
                     trace.close()

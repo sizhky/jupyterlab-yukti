@@ -4,7 +4,7 @@ import selectors
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .actions import tool_specs
 from .settings import APPROVAL_PARAMS, DEFAULTS
@@ -340,7 +340,27 @@ def verify_protocol(version: str, root: Path, environment: Mapping[str, str]) ->
     _VERIFIED.add(version)
 
 
+def workdir(root: Path, settings: Mapping[str, Any]) -> Path:
+    """The directory one turn runs in.
+
+    An empty cwd setting keeps the disposable directory, so the default
+    thread still cannot see the notebook's files.
+    """
+    if settings["cwd"]:
+        chosen = Path(settings["cwd"]).expanduser().resolve()
+        if not chosen.is_dir():
+            raise RuntimeError(f"Yukti cannot use cwd {chosen}: no directory")
+        return chosen
+    disposable = root / "work"
+    disposable.mkdir()
+    return disposable
+
+
 class AppServer:
+    # The name the reader's errors use, so a backend that reuses the reader
+    # names itself.
+    NAME = "Codex App Server"
+
     def __init__(
         self,
         root: str,
@@ -351,22 +371,31 @@ class AppServer:
         self.settings = dict(settings)
         self.codex_home = root_path / "codex-home"
         self.codex_home.mkdir()
-        # An empty cwd setting keeps the disposable directory, so the default
-        # thread still cannot see the notebook's files.
-        self.workdir = root_path / "work"
-        if self.settings["cwd"]:
-            self.workdir = Path(self.settings["cwd"]).expanduser().resolve()
-            if not self.workdir.is_dir():
-                raise RuntimeError(f"Yukti cannot use cwd {self.workdir}: no directory")
-        else:
-            self.workdir.mkdir()
+        self.workdir = workdir(root_path, self.settings)
         self._link_auth_cache()
 
         environment = os.environ.copy()
         environment["CODEX_HOME"] = str(self.codex_home)
+        self._open(APP_SERVER_COMMAND, environment, timeout)
+        self.account: dict[str, Any] = {}
+        self.thread_params: dict[str, Any] = {}
+        self.thread_id = ""
+        # Set while one turn is running, so close() knows there is a turn to
+        # stop and a completed turn is never interrupted.
+        self.turn_id = ""
+        try:
+            self._initialize()
+        except Exception:
+            self.close()
+            raise
+
+    def _open(
+        self, command: Sequence[str], environment: dict[str, str], timeout: int
+    ) -> None:
+        """Start ``command`` in ``self.workdir`` and own its stdout reader."""
         self.environment = environment
         self.process = subprocess.Popen(
-            APP_SERVER_COMMAND,
+            list(command),
             cwd=self.workdir,
             env=environment,
             stdin=subprocess.PIPE,
@@ -387,17 +416,6 @@ class AppServer:
         self._deadline = time.monotonic() + timeout
         self._next_request_id = 0
         self.sent: list[dict[str, Any]] = []
-        self.account: dict[str, Any] = {}
-        self.thread_params: dict[str, Any] = {}
-        self.thread_id = ""
-        # Set while one turn is running, so close() knows there is a turn to
-        # stop and a completed turn is never interrupted.
-        self.turn_id = ""
-        try:
-            self._initialize()
-        except Exception:
-            self.close()
-            raise
 
     def _link_auth_cache(self) -> None:
         current_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -436,7 +454,7 @@ class AppServer:
             while b"\n" not in self._pending:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not self._selector.select(remaining):
-                    raise TimeoutError("Codex App Server timed out")
+                    raise TimeoutError(f"{self.NAME} timed out")
                 chunk = os.read(self._stdout, READ_BYTES)
                 if not chunk:
                     return b""
@@ -451,7 +469,7 @@ class AppServer:
             return json.loads(line)
         assert self.process.stderr
         error = self.process.stderr.read().strip()
-        raise RuntimeError(error or "Codex App Server stopped unexpectedly")
+        raise RuntimeError(error or f"{self.NAME} stopped unexpectedly")
 
     def _request(self, method: str, params: Any) -> dict[str, Any]:
         request_id = self._next_request_id

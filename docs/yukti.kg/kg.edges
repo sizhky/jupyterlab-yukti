@@ -31,7 +31,7 @@ e5: ask-magic -> app-server sends
 	message=sync
 	note=run(build_transcript(cells, question))
 	description=build_transcript turns the cells and the question into one bounded string, and %%ask starts a Codex process with it. The transcript view shows how the two limits hold that string down.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)] match[with AppServer(root, settings) as server:]" context=2}
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)] match[with backend(root, settings) as server:]" context=2}
 e6: app-server -> ask-magic streams
 	step=s4
 	message=async

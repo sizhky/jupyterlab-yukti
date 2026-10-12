@@ -1,0 +1,183 @@
+k1: settings -> ask-magic returns
+	step=s1
+	message=async
+	note=backend: claude
+	description=A %%yukti backend line stores the backend and resets the model to the default of that backend. A later model line overrides it, and a model the backend cannot run raises.
+	code=[parse_settings](../../yukti/settings.py){show=symbol symbol=parse_settings kind=Function focus="match[cannot run model]" context=4}
+k2: ask-magic -> claude-code sends
+	step=s1
+	pair=p-claude
+	message=sync
+	fragment=opt:backend is claude
+	operand=[settings backend is claude]
+	operand_note=Any other backend takes the Codex path of the ask view. The with block and the rest of the turn do not change.
+	note=ClaudeCode(root, settings)
+	description=%%ask picks the class from the backend setting. Both classes offer run and close, so the turn code is the same.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[backend = ClaudeCode if settings.get(] match[with backend(root, settings) as server:]" context=1}
+k3: claude-code -> subscription-check checks
+	step=s2
+	pair=p-auth
+	message=sync
+	note=require_subscription(environment)
+	description=The check runs before the process starts. The environment passed on has no API key or cloud provider variable.
+	code=[ClaudeCode.__init__](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.__init__ kind=Method focus="match[self.account = require_subscription(environment)]" context=3}
+k4: subscription-check -> claude-cli sends
+	step=s2
+	pair=p-status
+	message=sync
+	note=claude auth status --json
+	description=The binary reports the login. Yukti reads only that report and never opens a credential file.
+	code=[require_subscription](../../yukti/claude_code.py){show=symbol symbol=require_subscription kind=Function focus="match[AUTH_COMMAND,]" context=3}
+k5: claude-cli -> subscription-check returns
+	step=s2
+	pair=p-status
+	note=loggedIn, authMethod, apiProvider
+	description=The report names the login method. Only claude.ai on the first-party provider counts as a subscription.
+	code=[subscription](../../yukti/claude_code.py){show=symbol symbol=subscription kind=Function focus=all}
+k6: subscription-check -> claude-code returns
+	step=s2
+	pair=p-auth
+	fragment=break:not a subscription
+	operand=[the login is not a subscription]
+	operand_note=An API key login, a cloud login or no login raises one sentence that names claude auth login. No process starts and no tokens are spent.
+	note=RuntimeError
+	description=A turn on the wrong billing path stops here, before the transcript leaves the kernel.
+	code=[require_subscription](../../yukti/claude_code.py){show=symbol symbol=require_subscription kind=Function focus="match[if not subscription(status):] match[raise RuntimeError(]" context=2}
+k7: subscription-check -> claude-code returns
+	step=s2
+	pair=p-auth
+	note=account
+	description=A subscription login returns the status, which debug output later shows without the credential.
+	code=[require_subscription](../../yukti/claude_code.py){show=symbol symbol=require_subscription kind=Function focus="match[return status]" context=2}
+k8: claude-code -> claude-cli starts
+	step=s3
+	message=sync
+	note=claude -p, stream-json pipes
+	description=claude_command maps the sandbox, tools, network and writable_roots settings to CLI flags. The notebook tools are declared as an sdk MCP server named yukti, so the CLI sends their messages back over the same pipe.
+	code=[ClaudeCode.__init__](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.__init__ kind=Method focus="match[command = claude_command(self.settings, instructions)] match[self._open(command, environment, timeout)]" context=1}
+k9: claude-code -> claude-cli sends
+	step=s3
+	pair=p-init
+	message=sync
+	note=control_request initialize
+	description=The first control request. While it waits, the CLI may ask for the MCP handshake, and the same loop answers it.
+	code=[ClaudeCode.__init__](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.__init__ kind=Method focus="match[hooks]" context=2}
+k10: claude-cli -> claude-code returns
+	step=s3
+	pair=p-init
+	note=control_response
+	description=The CLI is ready. A failure here closes the process before the error leaves.
+	code=[ClaudeCode._control](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._control kind=Method focus="match[return response.get(]" context=3}
+k11: ask-magic -> claude-code sends
+	step=s4
+	pair=p-claude-run
+	message=sync
+	note=run(transcript)
+	description=The same call the ask view makes on the Codex server, with the same callbacks. The bounded transcript is the user message.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[answer = server.run(]" context=3}
+k12: claude-code -> claude-cli sends
+	step=s4
+	message=async
+	note=user message
+	description=One stream-json user line carries the transcript. The CLI starts the model turn.
+	code=[ClaudeCode.run](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.run kind=Method focus="match[session_id]" context=3}
+k13: claude-cli -> claude-code streams
+	step=s5
+	message=async
+	fragment=loop:every message
+	operand=[until the result arrives]
+	operand_note=The CLI sends text deltas, tool use blocks, control requests and finally one result. A subagent message is skipped, because only the main thread speaks to the reader.
+	note=stream_event, assistant, user
+	description=run reads one line at a time and sends each kind to its own handler.
+	code=[ClaudeCode.run](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.run kind=Method focus="match[message = self._read()] match[self._stream(]" context=1}
+k14: claude-code -> ask-magic streams
+	step=s5
+	message=async
+	fragment=loop:every message
+	operand=[until the result arrives]
+	note=on_delta(text)
+	description=A text delta calls on_delta, so the notebook renders it as the ask view shows. The end of a text block adds a newline that closes its message block.
+	code=[ClaudeCode._stream](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._stream kind=Method focus="match[on_delta(delta.get(]" context=3}
+k15: claude-cli -> claude-code sends
+	step=s5
+	pair=p-mcp
+	message=sync
+	fragment=opt:the model calls a notebook tool
+	operand=[control_request mcp_message]
+	operand_note=The CLI wraps one JSON-RPC message for the yukti server in a control request. The kernel answers it, so the notebook tool never leaves the process.
+	note=mcp_message tools/call
+	description=The control request arrives inside the loop and is answered at once.
+	code=[ClaudeCode._answer_control](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._answer_control kind=Method focus="match[mcp_response]" context=2}
+k16: claude-code -> ask-magic sends
+	step=s5
+	pair=p-act
+	message=sync
+	fragment=opt:the model calls a notebook tool
+	operand=[control_request mcp_message]
+	note=on_action(name, arguments)
+	description=The notebook action runs in the kernel. A refusal becomes a result with isError set, so the model reads the sentence and can call again.
+	code=[ClaudeCode._mcp](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._mcp kind=Method focus="match[text = self._on_action(]" context=3}
+k17: ask-magic -> claude-code returns
+	step=s5
+	pair=p-act
+	fragment=opt:the model calls a notebook tool
+	operand=[control_request mcp_message]
+	note=result text
+	description=The text of the action result goes back to the model unchanged.
+	code=[ClaudeCode._mcp](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._mcp kind=Method focus="match[isError]" context=2}
+k18: claude-code -> claude-cli returns
+	step=s5
+	pair=p-mcp
+	fragment=opt:the model calls a notebook tool
+	operand=[control_request mcp_message]
+	note=control_response mcp_response
+	description=The reply uses the request id of the control request, so the CLI matches it.
+	code=[ClaudeCode._answer_control](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._answer_control kind=Method focus="match[success]" context=2}
+k19: claude-cli -> claude-code sends
+	step=s5
+	pair=p-permit
+	message=sync
+	fragment=opt:a built-in tool asks permission
+	operand=[control_request can_use_tool]
+	operand_note=A notebook has no prompt. The tool list the command set is the real limit, so the request is allowed and shown as an approval.
+	note=can_use_tool
+	description=Only a built-in tool the settings left on reaches this step.
+	code=[ClaudeCode._answer_control](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._answer_control kind=Method focus="match[can_use_tool] match[APPROVAL]" context=2}
+k20: claude-code -> claude-cli returns
+	step=s5
+	pair=p-permit
+	fragment=opt:a built-in tool asks permission
+	operand=[control_request can_use_tool]
+	note=behavior allow
+	description=The answer allows the call with its own input unchanged.
+	code=[ClaudeCode._answer_control](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._answer_control kind=Method focus="match[behavior]" context=2}
+k21: claude-code -> tool-item translates
+	step=s5
+	pair=p-item
+	message=sync
+	fragment=opt:a built-in tool runs
+	operand=[an assistant message holds a tool_use block]
+	operand_note=Bash becomes a commandExecution item and an edit tool becomes a fileChange item. A notebook tool has no item, because the notebook shows its own cell change.
+	note=tool_item(block)
+	description=The block is translated so the display code written for Codex items shows it.
+	code=[ClaudeCode._items](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._items kind=Method focus="match[item = tool_item(block)]" context=3}
+k22: tool-item -> claude-code returns
+	step=s5
+	pair=p-item
+	fragment=opt:a built-in tool runs
+	operand=[an assistant message holds a tool_use block]
+	note=Codex item or None
+	description=The item goes to on_tool at the start and again with the output at the end.
+	code=[ClaudeCode._items](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode._items kind=Method focus="match[on_tool(item)] match[aggregatedOutput]" context=2}
+k23: claude-cli -> claude-code returns
+	step=s6
+	pair=p-claude-run
+	note=result
+	description=The result message ends the turn. The streamed deltas are the answer, and the result text is the fallback when none arrived. A failed result raises.
+	code=[ClaudeCode.run](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.run kind=Method focus="match[is_error] match[if deltas:]" context=2}
+k24: claude-code -> ask-magic returns
+	step=s6
+	pair=p-claude
+	note=the turn is over
+	description=The with block exits and the process stops. Close is inherited from the Codex class, so both backends end the same way.
+	code=[AppServer.__exit__](../../yukti/app_server.py){show=symbol symbol=AppServer.__exit__ kind=Method focus=all context=2}

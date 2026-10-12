@@ -12,6 +12,8 @@ ask:
 	edges=kg.edges
 transcript:
 	edges=kg.transcript.edges
+claude:
+	edges=kg.claude.edges
 palette=kg.palette
 code_source=../../
 
@@ -23,6 +25,9 @@ streams color=relation.streams
 returns color=relation.returns
 limits color=relation.limits
 closes color=relation.closes
+checks color=relation.checks
+translates color=relation.translates
+starts color=relation.starts
 
 @views
 ask:
@@ -74,3 +79,29 @@ transcript:
 		request: Steps 3 to 4 — bound the whole request
 			nodes=ask-magic,transcript,output-boundary
 			caption="The blocks are joined, then a second call cuts the joined request to 512 KB. Many small cells can pass the first limit and still add up past this one, which is why both exist."
+claude:
+	source=claude
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=settings,ask-magic,claude-code,subscription-check,claude-cli,tool-item
+	sequence_message=message
+	sequence_fragment=fragment
+	sequence_operand=operand
+	sequence_operand_note=operand_note
+	color_by=step
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="The ask view with backend: claude. ClaudeCode replaces the Codex server behind the same run call. It checks the subscription login first, starts the user's own claude -p, answers the notebook tool calls in the kernel, and shows built-in tools as Codex items. Yukti never reads or forwards the OAuth credential."
+	slides:
+		choose: Steps 1 to 2 — pick the backend and check the login
+			nodes=settings,ask-magic,claude-code,subscription-check,claude-cli
+			caption="A backend line picks the class. Before any process starts, require_subscription asks the claude binary for the login. Anthropic permits subscription use only through the unmodified binary, so Yukti reads the report and never the credential."
+		start: Step 3 — start the CLI
+			nodes=claude-code,claude-cli
+			caption="claude_command turns the settings into flags and registers the yukti sdk MCP server. One initialize request opens the control protocol."
+		turn: Steps 4 to 6 — stream, answer tool calls, finish
+			nodes=ask-magic,claude-code,claude-cli,tool-item
+			caption="Deltas reach on_delta as in the Codex path. A notebook tool call arrives as a control request and is answered in the kernel. A built-in tool is allowed, translated to a Codex item and shown."

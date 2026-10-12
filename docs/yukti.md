@@ -24,4 +24,6 @@ After one pass, you should be able to answer three questions:
 - Which function turns cells and their outputs into the model transcript?
 - Why can a large output not fill the whole request?
 
+The `claude` view shows the same turn with `backend: claude`. `ClaudeCode` checks the Claude subscription login, starts the user's own `claude -p`, answers notebook tool calls in the kernel, and shows built-in tools as Codex items. Anthropic permits subscription use only through the unmodified Claude Code binary, so Yukti never reads or forwards the OAuth credential ([policy](https://code.claude.com/docs/en/legal-and-compliance)).
+
 Hover an arrow for the source statement that performs that exchange. The transcript view isolates the two limits that protect one turn: 8 KB per output and 512 KB for the complete request.

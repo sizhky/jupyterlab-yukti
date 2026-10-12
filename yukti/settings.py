@@ -30,6 +30,26 @@ MODELS = (
     "gpt-3.5-turbo",
 )
 
+# Claude models the ``claude`` CLI accepts by alias or by id.
+CLAUDE_MODELS = (
+    "opus",
+    "sonnet",
+    "haiku",
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+)
+
+# A backend line works like a profile: it sets the model that backend can run,
+# and a later ``model`` line overrides it. ``codex`` runs ``codex app-server``
+# on the ChatGPT subscription; ``claude`` runs the user's own signed-in
+# ``claude`` CLI on the Claude subscription.
+BACKENDS = {
+    "codex": {"model": "gpt-5.6-luna", "models": MODELS},
+    "claude": {"model": "sonnet", "models": CLAUDE_MODELS},
+}
+
 # Reasoning effort levels for models that support it (Sol, Terra, Luna, Astra).
 REASONING_EFFORT = ("low", "medium", "high")
 
@@ -55,6 +75,7 @@ PROFILES = {
 # namespace is. It is on, so an inserted cell can report what it printed, and
 # one line turns it off.
 DEFAULTS: dict[str, Any] = {
+    "backend": "codex",
     "permissions": "sandboxed",
     "approvals": "never",
     "run": True,
@@ -66,6 +87,7 @@ DEFAULTS: dict[str, Any] = {
 
 # The help text reads these, so a new key cannot go undocumented.
 KEY_HELP = {
+    "backend": " | ".join(BACKENDS),
     "permissions": " | ".join(PROFILES),
     "sandbox": " | ".join(SANDBOXES),
     "approvals": " | ".join(APPROVAL_PARAMS),
@@ -73,7 +95,7 @@ KEY_HELP = {
     "network": "on | off",
     "tools": "on | off",
     "run": "on | off, to run the code cells Yukti inserts",
-    "model": " | ".join(MODELS),
+    "model": " | ".join(MODELS + CLAUDE_MODELS),
     "reasoning_effort": " | ".join(REASONING_EFFORT),
     "writable_roots": "paths separated by commas",
 }
@@ -128,6 +150,24 @@ def summary(current: Mapping[str, Any]) -> str:
     )
 
 
+def changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
+    """Name the settings one ``%%yukti`` cell changed, in one line.
+
+    ``summary`` is the full table, which ``%%yukti --verbose`` still shows.
+
+    >>> changes(DEFAULTS, {**DEFAULTS, "backend": "claude", "model": "sonnet"})
+    '**Yukti**: backend = claude, model = sonnet'
+    >>> changes(DEFAULTS, DEFAULTS)
+    '**Yukti**: no change'
+    """
+    changed = [
+        f"{key} = {_shown(after.get(key))}"
+        for key in KEY_HELP
+        if after.get(key) != before.get(key)
+    ]
+    return "**Yukti**: " + (", ".join(changed) or "no change")
+
+
 def help_text(current: Mapping[str, Any]) -> str:
     """Render the vocabulary and the settings in force as Markdown.
 
@@ -154,7 +194,8 @@ def help_text(current: Mapping[str, Any]) -> str:
         [
             "**`%%yukti`** sets the privileges every later `%%ask` cell runs with.",
             "Write one `key: value` per line. A `permissions` line applies a whole",
-            "profile, and a later line overrides one of its values.",
+            "profile, and a later line overrides one of its values. The cell then",
+            "names what it changed; `%%yukti --verbose` shows every setting.",
             "",
             header,
             rule,
@@ -185,8 +226,10 @@ def _value(key: str, raw: str) -> Any:
         return _choice(key, raw, SANDBOXES)
     if key == "approvals":
         return _choice(key, raw, tuple(APPROVAL_PARAMS))
+    if key == "backend":
+        return _choice(key, raw, tuple(BACKENDS))
     if key == "model":
-        return _choice(key, raw, MODELS)
+        return _choice(key, raw, MODELS + CLAUDE_MODELS)
     if key == "reasoning_effort":
         return _choice(key, raw, REASONING_EFFORT)
     if key in {"network", "tools", "run"}:
@@ -212,6 +255,13 @@ def parse_settings(cell: str, current: Mapping[str, Any]) -> dict[str, Any]:
     ['/tmp/a', '/tmp/b']
     >>> parse_settings("run: off", DEFAULTS)["run"]
     False
+    >>> parse_settings("backend: claude", DEFAULTS)["model"]
+    'sonnet'
+    >>> parse_settings("backend: claude\\nmodel: opus", DEFAULTS)["model"]
+    'opus'
+    >>> parse_settings("model: opus", DEFAULTS)
+    Traceback (most recent call last):
+    ValueError: Yukti setting: backend codex cannot run model opus
     >>> parse_settings("sandbox: everything", DEFAULTS)
     Traceback (most recent call last):
     ValueError: Yukti setting: sandbox must be one of read-only, workspace-write, danger-full-access
@@ -233,4 +283,11 @@ def parse_settings(cell: str, current: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Yukti setting: {error}") from None
         if key == "permissions":
             settings.update(PROFILES[raw])
+        if key == "backend":
+            settings["model"] = BACKENDS[raw]["model"]
+    backend = settings.get("backend", DEFAULTS["backend"])
+    if settings["model"] not in BACKENDS[backend]["models"]:
+        raise ValueError(
+            f"Yukti setting: backend {backend} cannot run model {settings['model']}"
+        )
     return settings

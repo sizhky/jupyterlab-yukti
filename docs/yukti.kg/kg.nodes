@@ -6,7 +6,7 @@ prefix-comm: Prefix comm
 	code=[register_prefix_comm](../../yukti/comm.py){show=symbol symbol=register_prefix_comm kind=Function focus="match[kernel.comm_manager.register_target(COMM_TARGET, cache.open)]" context=2}
 ask-magic: %%ask magic
 	description=The cell magic that drives the turn. It takes the prefix, builds one bounded transcript, runs the server, and renders every delta.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[= self.prefixes.take()] match[transcript = build_transcript(cells, cell)] match[with AppServer(root, settings) as server:]" context=1}
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[= self.prefixes.take()] match[transcript = build_transcript(cells, cell)] match[with backend(root, settings) as server:]" context=1}
 app-server: Codex App Server
 	description=The Codex process %%ask starts for this turn. It runs the model and streams the answer back.
 	code=[AppServer](../../yukti/app_server.py){show=symbol symbol=AppServer kind=Class focus="match[def run(] match[def __exit__(self, *_: Any) -> None:]" context=2}
@@ -16,3 +16,20 @@ transcript: build_transcript
 output-boundary: truncate
 	description=The function that holds one string under a byte limit. It keeps the head and the tail, and names how much it cut.
 	code=[truncate](../../yukti/context.py){show=symbol symbol=truncate kind=Function focus=all}
+settings: parse_settings
+	description=The function that reads a %%yukti cell. A backend line picks codex or claude and sets the default model of that backend. A model the backend cannot run is refused.
+	code=[parse_settings](../../yukti/settings.py){show=symbol symbol=parse_settings kind=Function focus="match[BACKENDS[raw][] match[cannot run model]" context=2}
+claude-code: Claude Code backend
+	description=The class that gives %%ask the same contract as the Codex App Server, over the user's own claude -p process. It reuses the pipe reader and replaces the protocol. Notebook tools stay in the kernel.
+	code=[ClaudeCode](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode kind=Class focus="match[class ClaudeCode(AppServer):] match[def run(]" context=2}
+	decision=ClaudeCode subclasses AppServer, so the pipe reader, close and the context manager have one owner. workdir() and _open() were extracted from AppServer for this reuse.
+subscription-check: require_subscription
+	description=The function that stops the turn unless claude auth status reports a Claude subscription login. Anthropic permits subscription use only through the unmodified Claude Code binary. Yukti never reads or forwards the OAuth credential. It starts claude with the default config directory and asks the binary for the login status. Source: https://code.claude.com/docs/en/legal-and-compliance
+	policy=Subscription use only through the unmodified claude binary. Yukti never reads, stores or forwards the OAuth credential, and it removes API key and cloud provider variables from the environment so the subscription is billed.
+	code=[require_subscription](../../yukti/claude_code.py){show=symbol symbol=require_subscription kind=Function focus="match[AUTH_COMMAND,] match[if not subscription(status):]" context=2}
+claude-cli: claude -p process
+	description=The user's own signed-in Claude Code CLI. It runs the model and speaks the stream-json control protocol on stdin and stdout. Yukti does not modify it.
+	code=[CLAUDE_COMMAND](../../yukti/claude_code.py){show=symbol symbol=CLAUDE_COMMAND kind=Variable focus=all}
+tool-item: tool_item
+	description=The function that turns a Claude tool_use block into the Codex item shape. tool_line and tool_detail then stay unchanged. It is a call inside ClaudeCode, not a peer of it.
+	code=[tool_item](../../yukti/claude_code.py){show=symbol symbol=tool_item kind=Function focus=all}
