@@ -38,6 +38,7 @@ const ASK_CLASS = 'yukti-ask-cell';
 const FROZEN_CLASS = 'yukti-frozen-cell';
 const HIDDEN_CLASS = 'yukti-hidden-cell';
 const HIDE_TAG = 'yukti-hidden';
+const SHOW_TAG = 'yukti-shown';
 const WRAP_CLASS = 'yukti-wrap';
 const WRAP_KEY = 'yukti_wrap';
 // The column an ``%%ask`` cell wraps at, as a CSS length. ``ask-wrap.json``
@@ -184,11 +185,33 @@ function isFrozen(cell: ICellModel): boolean {
 }
 
 /**
+ * Whether one cell stays out of the ``%%ask`` prompt by default.
+ *
+ * A ``%%yukti`` cell configures Yukti and says nothing about the notebook, so
+ * it costs context and answers nothing.
+ */
+function hiddenByDefault(cell: ICellModel): boolean {
+  return (
+    cell.type === 'code' &&
+    cell.sharedModel.getSource().trimStart().startsWith('%%yukti')
+  );
+}
+
+function cellTags(cell: ICellModel): string[] {
+  const tags = cell.sharedModel.getMetadata('tags');
+  return Array.isArray(tags)
+    ? tags.filter((tag): tag is string => typeof tag === 'string')
+    : [];
+}
+
+/**
  * Whether the cell stays out of the ``%%ask`` prompt.
  *
  * The flag is one nbformat cell tag, the same extension point nbconvert's
  * ``remove_cell_tags`` reads, so the reader can add and drop it by hand in
- * JupyterLab's own Tags panel and it saves with the .ipynb.
+ * JupyterLab's own Tags panel and it saves with the .ipynb. As with
+ * ``yukti_wrap``, a tag holds an override only: ``yukti-hidden`` hides a cell
+ * and ``yukti-shown`` shows a ``%%yukti`` cell the default would hide.
  *
  * Pro: no private metadata key, and one tag carries both parts of the cell,
  * because a hidden cell sends neither its source nor its outputs.
@@ -196,8 +219,11 @@ function isFrozen(cell: ICellModel): boolean {
  * this one and a hand-edited list can hold it twice.
  */
 function isHidden(cell: ICellModel): boolean {
-  const tags = cell.sharedModel.getMetadata('tags');
-  return Array.isArray(tags) && tags.includes(HIDE_TAG);
+  const tags = cellTags(cell);
+  if (tags.includes(HIDE_TAG)) {
+    return true;
+  }
+  return !tags.includes(SHOW_TAG) && hiddenByDefault(cell);
 }
 
 /**
@@ -1198,7 +1224,9 @@ const freezePlugin = flagPlugin('yukti:freeze-cell', {
  * outline marks the cell without touching its text, so a hidden cell stays as
  * readable as every other one. Showing again drops the tag,
  * and drops the whole ``tags`` list when nothing else is in it, so a notebook
- * that never used tags saves the nbformat it had before.
+ * that never used tags saves the nbformat it had before. A ``%%yukti`` cell
+ * starts hidden, so showing it writes ``yukti-shown`` and hiding it again
+ * drops that tag.
  *
  * The cell itself is untouched: it edits, runs and prints as it always did,
  * because hiding speaks to Codex only.
@@ -1211,11 +1239,12 @@ const hidePlugin = flagPlugin('yukti:hide-cell', {
   command: 'yukti:toggle-hidden',
   read: isHidden,
   write: (cell, on) => {
-    const tags = cell.sharedModel.getMetadata('tags');
-    const kept = (Array.isArray(tags) ? tags : []).filter(
-      tag => tag !== HIDE_TAG
+    const kept = cellTags(cell).filter(
+      tag => tag !== HIDE_TAG && tag !== SHOW_TAG
     );
-    const next = on ? [...kept, HIDE_TAG] : kept;
+    const override =
+      on === hiddenByDefault(cell) ? [] : [on ? HIDE_TAG : SHOW_TAG];
+    const next = [...kept, ...override];
     if (next.length === 0) {
       cell.sharedModel.deleteMetadata('tags');
     } else {

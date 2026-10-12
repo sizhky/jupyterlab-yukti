@@ -2,8 +2,8 @@ e1: frontend -> prefix-comm sends
 	step=s1
 	message=async
 	note=notebook_prefix
-	description=The frontend sends one message holding the request id, the cells above %%ask, and the AI Mode. It does not wait for a reply.
-	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[type: 'notebook_prefix',] match[mode: readMode(notebook.model)]" context=3}
+	description=The frontend sends one message holding the request id, the cells above %%ask without the hidden ones, and the AI Mode. It does not wait for a reply.
+	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[.filter(widget => !isHidden(widget.model))] match[type: 'notebook_prefix',] match[mode: readMode(notebook.model)]" context=3}
 e2: ask-magic -> prefix-comm takes
 	step=s2
 	pair=p-take

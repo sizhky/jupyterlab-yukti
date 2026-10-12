@@ -1,6 +1,9 @@
 frontend: Notebook frontend
-	description=The JupyterLab extension. It sends the cells above %%ask, then shows the answer the kernel renders.
+	description=The JupyterLab extension. It sends the cells above %%ask, then shows the answer the kernel renders. Hidden cells are dropped from those cells.
 	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[comm.open({]" context=3}
+hidden-cells: isHidden
+	description=The function that decides whether a cell stays out of the %%ask prompt. A %%yukti cell is hidden by default. The yukti-hidden tag hides any cell, and the yukti-shown tag shows a %%yukti cell. A tag holds an override only, as yukti_wrap does. It is a call inside the frontend, not a peer of it.
+	code=[isHidden](../../yukti_frontend/src/index.ts){show=symbol symbol=isHidden kind=Function focus=all}
 prefix-comm: Prefix comm
 	description=The Jupyter comm that carries one turn. It holds the prefix until %%ask takes it, and stays open until %%ask closes it.
 	code=[register_prefix_comm](../../yukti/comm.py){show=symbol symbol=register_prefix_comm kind=Function focus="match[kernel.comm_manager.register_target(COMM_TARGET, cache.open)]" context=2}
