@@ -11,7 +11,7 @@ from yukti.ask import YuktiMagics
 def build_magic(comm):
     magic = object.__new__(YuktiMagics)
     magic.prefixes = MagicMock()
-    magic.prefixes.take.return_value = ("request-1", [], comm)
+    magic.prefixes.take.return_value = ("request-1", [], "concise", comm)
     magic.shell = MagicMock()
     magic.shell.execution_count = 7
     return magic

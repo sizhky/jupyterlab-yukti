@@ -1,7 +1,63 @@
-e1: frontend -> prefix-cache sends step=s1 note="→ notebook_prefix" message=sync pair=p-prefix code="[notebook_prefix message](yukti_frontend/src/index.ts?symbol=plugin&kind=variable)"
-e2: prefix-cache -> ask-magic takes step=s2 note="→ take()" message=sync pair=p-take code="[NotebookPrefixCache.take](yukti/comm.py?symbol=NotebookPrefixCache.take&kind=method)"
-e3: ask-magic -> transcript builds step=s3 note="→ build_transcript(cells, question)" message=sync pair=p-transcript code="[YuktiMagics.ask](yukti/ask.py?symbol=YuktiMagics.ask&kind=method)"
-e4: transcript -> output-boundary limits step=s4 note="→ per-output and request limits" message=sync pair=p-limit code="[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)"
-e5: output-boundary -> app-server returns step=s5 note="← bounded transcript" message=sync pair=p-server code="[truncate](yukti/context.py?symbol=truncate&kind=function)"
-e6: app-server -> ask-cell streams step=s6 note="→ answer deltas" message=async pair=p-answer code="[AppServer.run](yukti/app_server.py?symbol=AppServer.run&kind=method)"
-e7: ask-magic -> ask-cell returns step=s7 note="← rendered blocks" message=async pair=p-close code="[YuktiMagics.ask](yukti/ask.py?symbol=YuktiMagics.ask&kind=method)"
+e1: frontend -> prefix-comm sends
+	step=s1
+	message=async
+	note=notebook_prefix
+	description=The frontend sends one message holding the request id, the cells above %%ask, and the AI Mode. It does not wait for a reply.
+	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[type: 'notebook_prefix',] match[mode: readMode(notebook.model)]" context=3}
+e2: ask-magic -> prefix-comm takes
+	step=s2
+	pair=p-take
+	message=sync
+	note=take()
+	description=The cell starts and asks the comm for the request that is already waiting there.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[= self.prefixes.take()]" context=3}
+e3: prefix-comm -> ask-magic returns
+	step=s2
+	pair=p-take
+	note=request_id, cells, mode, comm
+	description=take() hands over the request and the comm handle, then forgets both. That same handle carries the answer traffic later in the turn.
+	code=[NotebookPrefixCache.take](../../yukti/comm.py){show=symbol symbol=NotebookPrefixCache.take kind=Method focus="match[request, self._request = self._request, None] match[comm, self._comm = self._comm, None]" context=2}
+e4: prefix-comm -> ask-magic returns
+	step=s2
+	fragment=break:no prefix
+	operand=[nothing was waiting]
+	operand_note=The cell ran with no notebook_prefix message in the comm, so there are no cells and no handle. take() raises, and the turn ends before any transcript is built.
+	note=RuntimeError
+	description=One guard covers an old frontend, a lost message and a re-run cell, because all three leave the comm empty.
+	code=[NotebookPrefixCache.take](../../yukti/comm.py){show=symbol symbol=NotebookPrefixCache.take kind=Method focus="match[if request is None or comm is None:] match[raise RuntimeError(]" context=2}
+e5: ask-magic -> app-server sends
+	step=s3
+	pair=p-run
+	message=sync
+	note=run(build_transcript(cells, question))
+	description=build_transcript turns the cells and the question into one bounded string, and %%ask starts a Codex process with it. The transcript view shows how the two limits hold that string down.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)] match[with AppServer(root, settings) as server:]" context=2}
+e6: app-server -> ask-magic streams
+	step=s4
+	message=async
+	fragment=loop:every delta
+	operand=[until the turn ends]
+	operand_note=The server sends message text, tool calls and tool output as they happen. One tool item arrives twice, started then completed, so its block is updated in place.
+	note=answer delta
+	description=Deltas reach %%ask, not the cell. %%ask decides which block each one belongs to.
+	code=[AppServer.run](../../yukti/app_server.py){show=symbol symbol=AppServer.run kind=Method focus="match[on_delta(delta)] match[on_tool(params.get(]" context=2}
+e7: ask-magic -> frontend streams
+	step=s5
+	message=async
+	fragment=loop:every delta
+	operand=[until the turn ends]
+	note=display(Markdown)
+	description=Each delta updates its own block by display id, so growing prose stays in one output instead of repeating below itself.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[.update(Markdown(message.text))] match[Markdown(message.text), display_id=True]" context=2}
+e8: app-server -> ask-magic returns
+	step=s5
+	pair=p-run
+	note=the turn is over
+	description=The with block exits and the Codex process stops. It lived for this one turn only.
+	code=[AppServer.__exit__](../../yukti/app_server.py){show=symbol symbol=AppServer.__exit__ kind=Method focus=all context=2}
+e9: ask-magic -> prefix-comm closes
+	step=s6
+	message=async
+	note=comm.close()
+	description=A finally block closes the comm, so the frontend learns the turn is over whether the answer streamed or an error stopped it.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[finally:] match[comm.close()]" context=2}

@@ -46,11 +46,50 @@ call replace_cells with the same cell_id to fix that cell, then run it again;
 never leave a broken cell behind and insert a second one next to it."""
 
 
-def base_instructions(tools: bool, run: bool = False) -> str:
+# The voice, which the ``AI Mode`` dropdown of the notebook toolbar picks. The
+# rules above say what Yukti may do; a mode says how much of the answer the
+# reader receives, so it is written last and wins where the two disagree.
+CONCISE = """
+Answer mode: concise.
+
+Answer in the fewest words needed to resolve the question.
+Skip preamble, restatement, background, and closing summary.
+Give the requested answer or cell directly.
+Add one short line explaining why only when it adds useful information."""
+
+LEARNING = """
+
+Answer mode: learning.
+
+Act as a mentor. Help the reader construct the answer instead of receiving it.
+
+Ask one question at a time.
+Prefer a leading question based on something the reader already knows or established earlier.
+When their answer is partly correct, state what is correct before addressing the missing part.
+Increase difficulty one step at a time.
+
+Do not write the requested final code or result while the reader can reasonably derive the next step.
+Insert a cell only when it gives the reader a concrete step to complete. State in one line what they must fill in.
+
+If the reader explicitly asks for the answer again, give it directly."""
+
+MODES = {"concise": CONCISE, "learning": LEARNING}
+DEFAULT_MODE = "concise"
+
+
+def base_instructions(
+    tools: bool, run: bool = False, mode: str = DEFAULT_MODE
+) -> str:
     """Yukti's own instruction, with or without permission to touch the disk.
 
     The cell tools are always there, so ``tools`` governs the shell and the
-    file system only, and ``run`` governs the kernel.
+    file system only, ``run`` governs the kernel, and ``mode`` governs the
+    voice. An unknown mode reads as the default, because the name arrives from
+    the frontend and a stale notebook must still ask its question.
+
+    Pro: one turn changes voice without restarting the kernel.
+    Con: the mode reaches the model as prose, so it guides the answer instead
+    of bounding it the way the sandbox bounds the tools.
 
     >>> base_instructions(False).splitlines()[1].endswith("do not read files.")
     True
@@ -62,10 +101,16 @@ def base_instructions(tools: bool, run: bool = False) -> str:
     False
     >>> "run_cells" in base_instructions(False, run=True)
     True
+    >>> "Answer mode: concise" in base_instructions(False)
+    True
+    >>> "Act as a mentor" in base_instructions(False, mode="learning")
+    True
+    >>> base_instructions(False, mode="typo") == base_instructions(False)
+    True
     """
     return PREAMBLE + (TOOLS if tools else NO_TOOLS) + ACTION_RULES + (
         RUN_RULES if run else ""
-    )
+    ) + MODES.get(mode, MODES[DEFAULT_MODE])
 
 
 # Approval requests reach Yukti only when ``%%yukti`` routes approvals away
@@ -453,8 +498,11 @@ class AppServer:
             **APPROVAL_PARAMS[self.settings["approvals"]],
             "sandbox": self.settings["sandbox"],
             "modelProvider": "openai",
+            "model": self.settings.get("model", "gpt-5.6-luna"),
             "baseInstructions": base_instructions(
-                self.settings["tools"], self.settings.get("run", False)
+                self.settings["tools"],
+                self.settings.get("run", False),
+                self.settings.get("mode", DEFAULT_MODE),
             ),
             "developerInstructions": "",
             # The notebook tools run in this process, not in the sandbox, so
@@ -463,6 +511,7 @@ class AppServer:
             # project_doc_max_bytes stays 0 in every mode, so an AGENTS.md in
             # the working directory never competes with Yukti's instruction.
             "config": {
+                "model_reasoning_effort": self.settings.get("reasoning_effort", "medium"),
                 "project_doc_max_bytes": 0,
                 "sandbox_workspace_write": {
                     "network_access": self.settings["network"],

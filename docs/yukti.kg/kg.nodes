@@ -1,7 +1,18 @@
 frontend: Notebook frontend
-prefix-cache: Prefix cache
+	description=The JupyterLab extension. It sends the cells above %%ask, then shows the answer the kernel renders.
+	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[comm.open({]" context=3}
+prefix-comm: Prefix comm
+	description=The Jupyter comm that carries one turn. It holds the prefix until %%ask takes it, and stays open until %%ask closes it.
+	code=[register_prefix_comm](../../yukti/comm.py){show=symbol symbol=register_prefix_comm kind=Function focus="match[kernel.comm_manager.register_target(COMM_TARGET, cache.open)]" context=2}
 ask-magic: %%ask magic
-transcript: Transcript builder
-output-boundary: Output limit
+	description=The cell magic that drives the turn. It takes the prefix, builds one bounded transcript, runs the server, and renders every delta.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[= self.prefixes.take()] match[transcript = build_transcript(cells, cell)] match[with AppServer(root, settings) as server:]" context=1}
 app-server: Codex App Server
-ask-cell: %%ask output
+	description=The Codex process %%ask starts for this turn. It runs the model and streams the answer back.
+	code=[AppServer](../../yukti/app_server.py){show=symbol symbol=AppServer kind=Class focus="match[def run(] match[def __exit__(self, *_: Any) -> None:]" context=2}
+transcript: build_transcript
+	description=The function that turns cells and their outputs into one model transcript. It is a call inside %%ask, not a peer of it.
+	code=[build_transcript](../../yukti/context.py){show=symbol symbol=build_transcript kind=Function focus=all}
+output-boundary: truncate
+	description=The function that holds one string under a byte limit. It keeps the head and the tail, and names how much it cut.
+	code=[truncate](../../yukti/context.py){show=symbol symbol=truncate kind=Function focus=all}

@@ -1,7 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema",
   "title": "Yukti Cell Copy",
-  "description": "Copy, freeze and hide buttons for the cell toolbar.",
+  "description": "Copy, freeze and hide buttons for the cell toolbar, and the two command mode keys that reach them.",
+  "jupyter.lab.shortcuts": [
+    {
+      "command": "yukti:toggle-hidden",
+      "keys": [
+        "H"
+      ],
+      "selector": ".jp-Notebook.jp-mod-commandMode:not(.jp-mod-readWrite) :focus"
+    },
+    {
+      "command": "yukti:toggle-freeze",
+      "keys": [
+        "F"
+      ],
+      "selector": ".jp-Notebook.jp-mod-commandMode:not(.jp-mod-readWrite) :focus"
+    }
+  ],
   "jupyter.lab.toolbars": {
     "Cell": [
       {

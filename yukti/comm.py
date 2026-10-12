@@ -21,12 +21,28 @@ class NotebookPrefixCache:
             return
         comm.close()
 
-    def take(self) -> tuple[str, list[dict[str, Any]], Any]:
+    def take(self) -> tuple[str, list[dict[str, Any]], str, Any]:
+        """Hand the waiting request to ``%%ask``, and forget it.
+
+        The mode rides on the same message as the cells, so the ``AI Mode``
+        dropdown reaches the kernel without a comm of its own and without a
+        round trip while the kernel is busy inside the ``%%ask`` cell.
+
+        Pro: the mode in force is the one shown when the cell ran.
+        Con: an old frontend sends no mode, so the name is validated where the
+        instruction is built, not here.
+        """
         request, self._request = self._request, None
         comm, self._comm = self._comm, None
         if request is None or comm is None:
             raise RuntimeError("Yukti did not receive the notebook prefix")
-        return request["request_id"], request["cells"], comm
+        mode = request.get("mode")
+        return (
+            request["request_id"],
+            request["cells"],
+            mode if isinstance(mode, str) else "",
+            comm,
+        )
 
 
 def register_prefix_comm(shell: Any, cache: NotebookPrefixCache) -> None:

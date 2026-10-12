@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "title": "Yukti Ask Wrap",
+  "description": "Where a cell wraps its lines, and the command mode key that turns the wrap on and off.",
+  "jupyter.lab.shortcuts": [
+    {
+      "command": "yukti:toggle-wrap",
+      "keys": [
+        "W"
+      ],
+      "selector": ".jp-Notebook.jp-mod-commandMode:not(.jp-mod-readWrite) :focus"
+    }
+  ],
+  "jupyter.lab.toolbars": {
+    "Cell": [
+      {
+        "name": "yukti-wrap",
+        "command": "yukti:toggle-wrap",
+        "rank": 65
+      }
+    ]
+  },
+  "properties": {
+    "lineLength": {
+      "title": "Ask line length",
+      "description": "The column an %%ask cell wraps its lines at. Zero wraps at the width of the cell instead.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    }
+  },
+  "additionalProperties": false,
+  "type": "object"
+}

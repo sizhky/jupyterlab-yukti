@@ -23,6 +23,7 @@ import {
 import {
   INotebookTracker,
   NotebookActions,
+  type INotebookModel,
   type Notebook,
   type NotebookPanel
 } from '@jupyterlab/notebook';
@@ -37,6 +38,16 @@ const ASK_CLASS = 'yukti-ask-cell';
 const FROZEN_CLASS = 'yukti-frozen-cell';
 const HIDDEN_CLASS = 'yukti-hidden-cell';
 const HIDE_TAG = 'yukti-hidden';
+const WRAP_CLASS = 'yukti-wrap';
+const WRAP_KEY = 'yukti_wrap';
+// The column an ``%%ask`` cell wraps at, as a CSS length. ``ask-wrap.json``
+// writes it, and ``none`` leaves the wrap at the width of the cell.
+const WIDTH_VAR = '--yukti-ask-width';
+// The colour of the rule drawn at that column, and ``transparent`` while no
+// column is set, because a rule at the edge of the cell reads as a border.
+const RULE_VAR = '--yukti-ask-rule';
+const RULE_COLOR = 'color-mix(in srgb, var(--jp-ui-font-color1) 30%, transparent)';
+const ASK_WRAP_PLUGIN_ID = 'yukti:ask-wrap';
 const EDIT_CLASS = 'yukti-edit-output';
 const EDITING_CLASS = 'yukti-editing';
 const AREA_CLASS = 'yukti-edit-area';
@@ -77,6 +88,25 @@ const ASK_STYLE = tint(ASK_CLASS, 'var(--jp-error-color1)') +
 .${HIDDEN_CLASS} {
   outline: 2px dashed var(--jp-border-color0);
   outline-offset: -2px;
+}
+.${WRAP_CLASS} .cm-content {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.${ASK_CLASS}.${WRAP_CLASS} .cm-content {
+  max-width: var(${WIDTH_VAR}, none);
+  /* One 1 px column of dashes, painted as a background, so the rule costs no
+     node inside the editable content and no layout. CodeMirror pads every
+     line 2 px on the right, so the rule stands where the text breaks, not at
+     the edge of the box. */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(${RULE_VAR}, transparent) 0 3px,
+    transparent 3px 6px
+  );
+  background-size: 1px 100%;
+  background-position: right 2px top;
+  background-repeat: no-repeat;
 }
 .${ASK_CLASS} .jp-OutputArea-child {
   position: relative;
@@ -170,6 +200,34 @@ function isHidden(cell: ICellModel): boolean {
   return Array.isArray(tags) && tags.includes(HIDE_TAG);
 }
 
+/**
+ * Whether one cell wraps its lines by default.
+ *
+ * A question is prose, so an ``%%ask`` cell wraps and every other cell keeps
+ * the horizontal scroll JupyterLab gives it.
+ */
+function wrapsByDefault(cell: ICellModel): boolean {
+  return cell.type === 'code' && isAskSource(cell.sharedModel.getSource());
+}
+
+/**
+ * Whether one cell wraps its lines now.
+ *
+ * ``yukti_wrap`` holds an override only, so an absent key reads as the
+ * default and a cell that never left it saves the nbformat it had before. A
+ * cell that stops being an ``%%ask`` cell therefore stops wrapping, unless the
+ * reader asked that cell for a wrap by hand.
+ *
+ * Pro: one key, two states, and the toggle reaches every cell, not the
+ * ``%%ask`` cells only.
+ * Con: the override survives an edit that changes what the cell is, so a
+ * question turned back into code keeps the wrap the question asked for.
+ */
+function wrapsLines(cell: ICellModel): boolean {
+  const value = cell.sharedModel.getMetadata(WRAP_KEY);
+  return typeof value === 'boolean' ? value : wrapsByDefault(cell);
+}
+
 function serializeOutput(output: IOutput): SerializedOutput {
   if (isStream(output)) {
     return { type: output.output_type, content: text(output.text) };
@@ -258,6 +316,109 @@ function showRun(cell: Cell, outputs: unknown, count: unknown): void {
   });
   model.executionCount = typeof count === 'number' ? count : null;
 }
+
+/**
+ * The two voices ``AI Mode`` switches between, and the metadata key that
+ * remembers which one this notebook asked for.
+ *
+ * The kernel holds the prompt each name stands for, so a new mode is one
+ * entry here and one entry in ``MODES`` of ``app_server.py``.
+ */
+const MODES = [
+  { value: 'concise', label: 'Concise' },
+  { value: 'learning', label: 'Learning' }
+];
+const MODE_KEY = 'yukti_mode';
+const MODE_CLASS = 'yukti-mode';
+const MODE_STYLE = `
+.${MODE_CLASS} {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+.${MODE_CLASS} > span {
+  color: var(--jp-ui-font-color1);
+  font-size: var(--jp-ui-font-size1);
+  white-space: nowrap;
+}
+`;
+
+/**
+ * Read the mode one notebook asked for, and fall back to the first one.
+ *
+ * A file the reader edited by hand can name anything, so the name is checked
+ * here as well as in the kernel.
+ */
+function readMode(model: INotebookModel | null): string {
+  const value = model?.getMetadata(MODE_KEY);
+  return MODES.some(mode => mode.value === value)
+    ? (value as string)
+    : MODES[0].value;
+}
+
+/**
+ * The ``AI Mode`` dropdown of one notebook's toolbar.
+ *
+ * The choice lives in the notebook's own metadata, so it survives a reload and
+ * travels with the file, and the prefix comm reads it off the same model it
+ * already holds instead of through a second channel.
+ *
+ * Pro: one notebook can ask for a mentor while the next one asks for answers.
+ * Con: a new notebook starts at the first mode again, because a file carries
+ * no user preference.
+ */
+function modeWidget(panel: NotebookPanel): Widget {
+  const node = document.createElement('div');
+  node.className = MODE_CLASS;
+  const label = document.createElement('span');
+  label.textContent = 'AI Mode';
+  const select = document.createElement('select');
+  select.className = 'jp-mod-styled';
+  select.title = 'The voice every %%ask cell answers in';
+  select.setAttribute('aria-label', 'AI Mode');
+  for (const mode of MODES) {
+    const option = document.createElement('option');
+    option.value = mode.value;
+    option.textContent = mode.label;
+    select.appendChild(option);
+  }
+  select.addEventListener('change', () => {
+    panel.model?.setMetadata(MODE_KEY, select.value);
+  });
+  // The metadata of a notebook that is still loading is empty, so the value
+  // is read once the file has landed.
+  panel.context.ready.then(() => {
+    select.value = readMode(panel.model);
+  });
+  node.append(label, select);
+  return new Widget({ node });
+}
+
+/**
+ * One dropdown per notebook toolbar, next to the cell type.
+ *
+ * Pro: the mode sits where the reader already looks for a per-notebook
+ * choice, and one glance says which voice the next question gets.
+ * Con: the item is inserted by hand, so a JupyterLab release that renames the
+ * ``cellType`` item moves the dropdown to the end of the toolbar.
+ */
+const aiModePlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:ai-mode',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (_app, tracker: INotebookTracker) => {
+    const style = document.createElement('style');
+    style.textContent = MODE_STYLE;
+    document.head.appendChild(style);
+    tracker.widgetAdded.connect((_sender, panel: NotebookPanel) => {
+      const widget = modeWidget(panel);
+      if (!panel.toolbar.insertAfter('cellType', MODE_CLASS, widget)) {
+        panel.toolbar.addItem(MODE_CLASS, widget);
+      }
+    });
+  }
+};
 
 const plugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:notebook-prefix',
@@ -389,7 +550,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
       comm.open({
         type: 'notebook_prefix',
         request_id: requestId,
-        cells
+        cells,
+        mode: readMode(notebook.model)
       });
     });
   }
@@ -443,6 +605,7 @@ function trackAskCells(
       widget.node.classList.toggle(ASK_CLASS, asksCodex(widget));
       widget.node.classList.toggle(FROZEN_CLASS, isFrozen(widget.model));
       widget.node.classList.toggle(HIDDEN_CLASS, isHidden(widget.model));
+      widget.node.classList.toggle(WRAP_CLASS, wrapsLines(widget.model));
     }
   };
 
@@ -897,11 +1060,35 @@ function eyeIcon(open: boolean): LabIcon {
   });
 }
 
-// Both padlocks and both eyes are built once, because ``LabIcon`` keys its
-// instances by name and warns about a second icon under a name it already
-// holds.
+/**
+ * Three lines, the middle one turning back while the cell wraps and running
+ * off to the right while it does not.
+ *
+ * The glyph repeats the copy buttons' 16 px box and their ``jp-icon3`` class,
+ * so the theme paints every button the same grey.
+ */
+function wrapIcon(wrapped: boolean): LabIcon {
+  const grey = 'class="jp-icon3" style="fill:none" stroke="#616161" ' +
+    'stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" ';
+  const middle = wrapped
+    ? 'M2.5 8h8a2 2 0 0 1 0 4H6.5m1.6-1.6L6.5 12l1.6 1.6'
+    : 'M2.5 10h9.5m-1.6-1.6L12 10l-1.6 1.6';
+  return new LabIcon({
+    name: `yukti:wrap-${wrapped ? 'on' : 'off'}`,
+    svgstr:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
+      `<path d="M2.5 4h11" ${grey}/>` +
+      `<path d="${middle}" ${grey}/>` +
+      '</svg>'
+  });
+}
+
+// Both padlocks, both eyes and both wraps are built once, because ``LabIcon``
+// keys its instances by name and warns about a second icon under a name it
+// already holds.
 const PADLOCKS = { on: padlockIcon(true), off: padlockIcon(false) };
 const EYES = { on: eyeIcon(true), off: eyeIcon(false) };
+const WRAPS = { on: wrapIcon(true), off: wrapIcon(false) };
 
 type CellFlag = {
   /** The command id ``schema/cell-copy.json`` names. */
@@ -1065,6 +1252,70 @@ function notebookDir(panel: NotebookPanel | null): string | null {
  * Con: JupyterLab serves the file browser on ``/lab/tree/`` instead, so the
  * link answers with a redirect, or a 404 on a server without Jupyter Notebook.
  */
+/**
+ * Wrap the active cell's lines, or let them run off to the right.
+ *
+ * The wrap is one class on the cell and two CSS rules, not an editor option,
+ * so it reaches a cell the notebook has not built an editor for yet and it
+ * survives the windowing that detaches a cell and attaches it again.
+ * CodeMirror reads the computed ``white-space`` of its own content, so it
+ * measures the wrapped lines the way it measures the option's.
+ *
+ * Pro: an ``%%ask`` question reads as a paragraph, which is what it is.
+ * Con: the class is painted by the notebook watcher, so a cell in a document
+ * no watcher runs over keeps the wrap its default asks for.
+ */
+const wrapPlugin = flagPlugin('yukti:wrap-cell', {
+  command: 'yukti:toggle-wrap',
+  read: wrapsLines,
+  write: (cell, on) => {
+    if (on === wrapsByDefault(cell)) {
+      cell.sharedModel.deleteMetadata(WRAP_KEY);
+    } else {
+      cell.sharedModel.setMetadata(WRAP_KEY, on);
+    }
+  },
+  icon: wrapped => (wrapped ? WRAPS.on : WRAPS.off),
+  label: wrapped => (wrapped ? 'Stop Wrapping Lines' : 'Wrap Lines'),
+  caption: wrapped =>
+    wrapped
+      ? 'Let this cell scroll sideways instead of wrapping its lines'
+      : 'Wrap this cell\'s lines at the ask line length'
+});
+
+/**
+ * The column an ``%%ask`` cell wraps its lines at.
+ *
+ * The length reaches the stylesheet as one CSS variable on the document, so
+ * one write repaints every wrapped ask cell of every open notebook and no cell
+ * has to be visited. ``ch`` is the width of a zero in the cell's own font,
+ * which is the code font, so the number reads as a column count. A second
+ * variable carries the colour of the dashed rule that marks the column, and
+ * turns it transparent while no column is set.
+ *
+ * Pro: one setting, one place, and the reader sees the new width as they drag
+ * the number.
+ * Con: ``ch`` is exact for a monospaced font only, so a proportional code font
+ * wraps a little short of the number.
+ */
+const askWrapPlugin: JupyterFrontEndPlugin<void> = {
+  id: ASK_WRAP_PLUGIN_ID,
+  autoStart: true,
+  requires: [ISettingRegistry],
+  activate: async (_app, registry: ISettingRegistry) => {
+    const settings = await registry.load(ASK_WRAP_PLUGIN_ID);
+    const apply = (): void => {
+      const length = settings.get('lineLength').composite;
+      const column = typeof length === 'number' && length > 0;
+      const root = document.documentElement.style;
+      root.setProperty(WIDTH_VAR, column ? `${length as number}ch` : 'none');
+      root.setProperty(RULE_VAR, column ? RULE_COLOR : 'transparent');
+    };
+    apply();
+    settings.changed.connect(apply);
+  }
+};
+
 const fileMenuPlugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:file-menu',
   autoStart: true,
@@ -1444,12 +1695,15 @@ const bookmarksPlugin: JupyterFrontEndPlugin<void> = {
 
 export default [
   plugin,
+  aiModePlugin,
   plainTextPlugin,
   skipAskPlugin,
   editOutputPlugin,
   copyPlugin,
   freezePlugin,
   hidePlugin,
+  wrapPlugin,
+  askWrapPlugin,
   fileMenuPlugin,
   bookmarksPlugin
 ];

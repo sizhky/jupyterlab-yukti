@@ -17,6 +17,22 @@ from typing import Any, Mapping
 # The complete SandboxMode enum of the App Server protocol.
 SANDBOXES = ("read-only", "workspace-write", "danger-full-access")
 
+# OpenAI models available via Codex. GPT-5.6 tiers: Astra (flagship/GPT-6),
+# Sol (state-of-the-art), Terra (balanced), Luna (fast/cheap). Legacy: 4o/4-turbo/4/3.5-turbo.
+MODELS = (
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-4o",
+    "gpt-4-turbo",
+    "gpt-4",
+    "gpt-3.5-turbo",
+)
+
+# Reasoning effort levels for models that support it (Sol, Terra, Luna, Astra).
+REASONING_EFFORT = ("low", "medium", "high")
+
 # A notebook has no prompt, so a policy that asks the user would stall the
 # kernel. ``never`` asks nobody; ``auto_review`` lets a Codex subagent decide.
 APPROVAL_PARAMS = {
@@ -42,6 +58,8 @@ DEFAULTS: dict[str, Any] = {
     "permissions": "sandboxed",
     "approvals": "never",
     "run": True,
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "medium",
     "writable_roots": [],
     **PROFILES["sandboxed"],
 }
@@ -55,6 +73,8 @@ KEY_HELP = {
     "network": "on | off",
     "tools": "on | off",
     "run": "on | off, to run the code cells Yukti inserts",
+    "model": " | ".join(MODELS),
+    "reasoning_effort": " | ".join(REASONING_EFFORT),
     "writable_roots": "paths separated by commas",
 }
 PROFILE_KEYS = ("sandbox", "cwd", "network", "tools")
@@ -165,6 +185,10 @@ def _value(key: str, raw: str) -> Any:
         return _choice(key, raw, SANDBOXES)
     if key == "approvals":
         return _choice(key, raw, tuple(APPROVAL_PARAMS))
+    if key == "model":
+        return _choice(key, raw, MODELS)
+    if key == "reasoning_effort":
+        return _choice(key, raw, REASONING_EFFORT)
     if key in {"network", "tools", "run"}:
         return FLAGS[_choice(key, raw, tuple(FLAGS))]
     if key == "writable_roots":

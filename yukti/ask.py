@@ -156,12 +156,15 @@ class YuktiMagics(Magics):
         if option not in {"", "--debug", "--trace"}:
             raise UsageError("%%ask accepts only --debug or --trace")
 
-        request_id, cells, comm = self.prefixes.take()
+        request_id, cells, mode, comm = self.prefixes.take()
         transcript = build_transcript(cells, cell)
         trace = Trace.enabled() if option == "--trace" else Trace.disabled()
 
         with tempfile.TemporaryDirectory(prefix="yukti-") as root:
-            with AppServer(root, self.settings) as server:
+            # The dropdown decides the voice for this turn only, so the
+            # settings ``%%yukti`` wrote stay untouched.
+            settings = {**self.settings, "mode": mode} if mode else self.settings
+            with AppServer(root, settings) as server:
                 if option == "--debug":
                     comm.close()
                     trace.close()

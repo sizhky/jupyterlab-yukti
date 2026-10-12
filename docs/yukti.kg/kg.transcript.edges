@@ -1,4 +1,50 @@
-t1: ask-magic -> output-boundary limits step=s1 phase=output note="→ truncate(output, 8 KB)" message=sync pair=p-output code="[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)"
-t2: output-boundary -> transcript returns step=s2 phase=output note="← bounded output" message=sync pair=p-output code="[truncate](yukti/context.py?symbol=truncate&kind=function)"
-t3: transcript -> app-server limits step=s3 phase=request note="→ truncate(request, 512 KB)" message=sync pair=p-request code="[build_transcript](yukti/context.py?symbol=build_transcript&kind=function)"
-t4: app-server -> transcript returns step=s4 phase=request note="← bounded request" message=sync pair=p-request code="[truncate](yukti/context.py?symbol=truncate&kind=function)"
+t1: ask-magic -> transcript builds
+	step=s1
+	phase=build
+	pair=p-build
+	message=sync
+	note=build_transcript(cells, question)
+	description=%%ask hands over the cells the frontend sent and the question the user typed. One call returns the whole request.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)]" context=3}
+t2: transcript -> output-boundary limits
+	step=s2
+	phase=output
+	pair=p-output
+	message=sync
+	fragment=loop:every cell
+	operand=[each cell above %%ask]
+	operand_note=Each cell becomes a labelled block holding its source and its output. The output is bounded before the block joins the request, so one long print cannot crowd out the other cells.
+	note=truncate(output, 8 KB)
+	description=The limit is applied per output, not once at the end. A cell that printed a whole dataframe is cut here.
+	code=[build_transcript](../../yukti/context.py){show=symbol symbol=build_transcript kind=Function focus="match[content = truncate(] match[OUTPUT_LIMIT_BYTES]" context=1}
+t3: output-boundary -> transcript returns
+	step=s2
+	phase=output
+	pair=p-output
+	fragment=loop:every cell
+	operand=[each cell above %%ask]
+	note=the output, cut if it was over 8 KB
+	description=A cut keeps the head and the tail and names the original size, so the model reads what the cell started with and what it ended with.
+	code=[truncate](../../yukti/context.py){show=symbol symbol=truncate kind=Function focus="match[half = limit // 2] match[size_kb = len(data) // 1024]" context=2}
+t4: transcript -> output-boundary limits
+	step=s3
+	phase=request
+	pair=p-request
+	message=sync
+	note=truncate(request, 512 KB)
+	description=The blocks are joined, then the whole request meets a second limit. Many small cells can pass the first limit and still add up past this one.
+	code=[build_transcript](../../yukti/context.py){show=symbol symbol=build_transcript kind=Function focus="match[REQUEST_LIMIT_BYTES]" context=3}
+t5: output-boundary -> transcript returns
+	step=s3
+	phase=request
+	pair=p-request
+	note=the request, cut if it was over 512 KB
+	description=Two limits, one function. truncate takes the limit and the label as arguments, so the output rule and the request rule share one implementation.
+	code=[truncate](../../yukti/context.py){show=symbol symbol=truncate kind=Function focus="match[if len(data) <= limit:] match[def truncate(content: str, limit: int, label: str)]" context=1}
+t6: transcript -> ask-magic returns
+	step=s4
+	phase=build
+	pair=p-build
+	note=one bounded transcript
+	description=%%ask receives one string that is under 512 KB whatever the notebook held. That string is what the Codex App Server runs.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)]" context=3}
