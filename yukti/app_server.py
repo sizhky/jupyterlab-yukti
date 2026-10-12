@@ -50,10 +50,14 @@ never leave a broken cell behind and insert a second one next to it."""
 # rules above say what Yukti may do; a mode says how much of the answer the
 # reader receives, so it is written last and wins where the two disagree.
 CONCISE = """
+
 Answer mode: concise.
 
+These limits apply to the answer, not to the short message before each call.
 Answer in the fewest words needed to resolve the question.
-Skip preamble, restatement, background, and closing summary.
+Use at most three sentences or five bullets, unless the user asks for more.
+Skip preamble, restatement, background, caveats, and closing summary.
+Never repeat what a cell, an output, or the transcript already shows.
 Give the requested answer or cell directly.
 Add one short line explaining why only when it adds useful information."""
 
