@@ -47,7 +47,7 @@ CLAUDE_MODELS = (
 # ``claude`` CLI on the Claude subscription.
 BACKENDS = {
     "codex": {"model": "gpt-5.6-luna", "models": MODELS},
-    "claude": {"model": "sonnet", "models": CLAUDE_MODELS},
+    "claude": {"model": "claude-opus-5-5", "models": CLAUDE_MODELS},
 }
 
 # Reasoning effort levels for models that support it (Sol, Terra, Luna, Astra).
@@ -75,14 +75,18 @@ PROFILES = {
 # namespace is. It is on, so an inserted cell can report what it printed, and
 # one line turns it off.
 DEFAULTS: dict[str, Any] = {
-    "backend": "codex",
-    "permissions": "sandboxed",
+    "backend": "claude",
+    "permissions": "full",
     "approvals": "never",
     "run": True,
-    "model": "gpt-5.6-luna",
+    "model": "claude-opus-5-5",
     "reasoning_effort": "medium",
     "writable_roots": [],
-    **PROFILES["sandboxed"],
+    # Seconds a backend may send nothing before %%ask stops the turn. A
+    # ``git clone`` or ``uv sync`` inside one tool call can stay silent for
+    # minutes, so the default is loose.
+    "idle_timeout": 600,
+    **PROFILES["full"],
 }
 
 # The help text reads these, so a new key cannot go undocumented.
@@ -98,6 +102,7 @@ KEY_HELP = {
     "model": " | ".join(MODELS + CLAUDE_MODELS),
     "reasoning_effort": " | ".join(REASONING_EFFORT),
     "writable_roots": "paths separated by commas",
+    "idle_timeout": "seconds of silence before %%ask stops the turn, such as 600",
 }
 PROFILE_KEYS = ("sandbox", "cwd", "network", "tools")
 
@@ -126,9 +131,9 @@ def summary(current: Mapping[str, Any]) -> str:
     Pro: the echo of a ``%%yukti`` cell reads like the help table above it.
     Con: a machine reader of the cell output must parse Markdown.
 
-    >>> "| `sandbox` | read-only |" in summary(DEFAULTS)
+    >>> "| `sandbox` | danger-full-access |" in summary(DEFAULTS)
     True
-    >>> "| `network` | off |" in summary(DEFAULTS)
+    >>> "| `network` | on |" in summary(DEFAULTS)
     True
     >>> "| `run` | on |" in summary(DEFAULTS)
     True
@@ -145,7 +150,7 @@ def summary(current: Mapping[str, Any]) -> str:
             "| --- | --- |",
             *rows,
             "",
-            "Write `%%yukti` alone for the full vocabulary.",
+            "Write `%%yukti help` for the full vocabulary.",
         ]
     )
 
@@ -155,8 +160,8 @@ def changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> str:
 
     ``summary`` is the full table, which ``%%yukti --verbose`` still shows.
 
-    >>> changes(DEFAULTS, {**DEFAULTS, "backend": "claude", "model": "sonnet"})
-    '**Yukti**: backend = claude, model = sonnet'
+    >>> changes(DEFAULTS, {**DEFAULTS, "backend": "codex", "model": "gpt-5.6-luna"})
+    '**Yukti**: backend = codex, model = gpt-5.6-luna'
     >>> changes(DEFAULTS, DEFAULTS)
     '**Yukti**: no change'
     """
@@ -195,7 +200,7 @@ def help_text(current: Mapping[str, Any]) -> str:
             "**`%%yukti`** sets the privileges every later `%%ask` cell runs with.",
             "Write one `key: value` per line. A `permissions` line applies a whole",
             "profile, and a later line overrides one of its values. The cell then",
-            "names what it changed; `%%yukti --verbose` shows every setting.",
+            "names what it changed; an empty `%%yukti` cell shows every setting.",
             "",
             header,
             rule,
@@ -238,6 +243,10 @@ def _value(key: str, raw: str) -> Any:
         return [root.strip() for root in raw.split(",") if root.strip()]
     if key == "cwd":
         return raw
+    if key == "idle_timeout":
+        if not raw.isdigit() or int(raw) == 0:
+            raise ValueError("idle_timeout must be a whole number of seconds above 0")
+        return int(raw)
     raise ValueError(f"unknown setting {key}; use one of {', '.join(sorted(DEFAULTS))}")
 
 
@@ -255,13 +264,18 @@ def parse_settings(cell: str, current: Mapping[str, Any]) -> dict[str, Any]:
     ['/tmp/a', '/tmp/b']
     >>> parse_settings("run: off", DEFAULTS)["run"]
     False
-    >>> parse_settings("backend: claude", DEFAULTS)["model"]
-    'sonnet'
+    >>> parse_settings("idle_timeout: 1800", DEFAULTS)["idle_timeout"]
+    1800
+    >>> parse_settings("idle_timeout: 0", DEFAULTS)
+    Traceback (most recent call last):
+    ValueError: Yukti setting: idle_timeout must be a whole number of seconds above 0
+    >>> parse_settings("backend: codex", DEFAULTS)["model"]
+    'gpt-5.6-luna'
     >>> parse_settings("backend: claude\\nmodel: opus", DEFAULTS)["model"]
     'opus'
-    >>> parse_settings("model: opus", DEFAULTS)
+    >>> parse_settings("model: gpt-4o", DEFAULTS)
     Traceback (most recent call last):
-    ValueError: Yukti setting: backend codex cannot run model opus
+    ValueError: Yukti setting: backend claude cannot run model gpt-4o
     >>> parse_settings("sandbox: everything", DEFAULTS)
     Traceback (most recent call last):
     ValueError: Yukti setting: sandbox must be one of read-only, workspace-write, danger-full-access

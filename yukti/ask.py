@@ -10,6 +10,7 @@ running a cell in ``execute``, tracing in ``trace``.
 
 import html
 import json
+import os
 import tempfile
 from typing import Any
 
@@ -27,7 +28,7 @@ from .actions import (
 from .app_server import AppServer, tool_detail, tool_line
 from .claude_code import ClaudeCode
 from .comm import NotebookPrefixCache, register_prefix_comm
-from .context import build_transcript
+from .context import build_transcript, question_images
 from .execute import run_source
 from .settings import DEFAULTS, changes, help_text, parse_settings, summary
 from .stream import MessageStream
@@ -105,19 +106,23 @@ def help_transform(lines: list[str]) -> list[str]:
     """Rewrite a cell that holds only ``%%yukti`` into the line magic.
 
     IPython refuses a cell magic with an empty body before the magic runs, so
-    an empty ``%%yukti`` cell could never reach the help.
+    an empty ``%%yukti`` cell could never reach the settings or the help.
 
-    Pro: the help appears where a reader looks for it.
+    Pro: the settings and the help appear where a reader looks for them.
     Con: one transform runs over every cell the kernel executes.
 
     >>> help_transform(["%%yukti\\n"])
     ['%yukti\\n']
+    >>> help_transform(["%%yukti help\\n"])
+    ['%yukti help\\n']
     >>> help_transform(["%%yukti\\n", "permissions: elevated\\n"])
     ['%%yukti\\n', 'permissions: elevated\\n']
     """
     written = [line.strip() for line in lines if line.strip()]
-    if written in (["%%yukti"], ["%%yukti help"]):
+    if written == ["%%yukti"]:
         return ["%yukti\n"]
+    if written == ["%%yukti help"]:
+        return ["%yukti help\n"]
     return lines
 
 
@@ -138,14 +143,17 @@ class YuktiMagics(Magics):
     def yukti(self, line: str, cell: str = "") -> Any:
         """Change the privileges every later ``%%ask`` cell runs with.
 
-        An empty cell, ``%yukti`` and ``%%yukti help`` all show the help
-        instead, so the vocabulary is one keystroke away from the mistake.
-        A settings cell names only what it changed; ``--verbose`` shows the
-        full table.
+        An empty cell and ``%yukti`` show the settings in force.
+        ``%%yukti help`` shows the vocabulary, so it is one keystroke away
+        from the mistake. A settings cell names only what it changed;
+        ``--verbose`` shows the full table.
         """
         option = line.strip()
-        if option in {"", "help"} and not (cell or "").strip():
-            return Markdown(help_text(self.settings))
+        if not (cell or "").strip():
+            if option in {"", "--verbose"}:
+                return Markdown(summary(self.settings))
+            if option == "help":
+                return Markdown(help_text(self.settings))
         if option not in {"", "--verbose"}:
             raise UsageError("%%yukti accepts only --verbose; write settings in the cell body")
         before = self.settings
@@ -168,6 +176,13 @@ class YuktiMagics(Magics):
 
         request_id, cells, mode, comm = self.prefixes.take()
         transcript = build_transcript(cells, cell)
+        # The kernel starts in the notebook directory, so the relative path a
+        # paste wrote resolves to the file the paste saved.
+        images = [os.path.abspath(path) for path in question_images(cell)]
+        missing = [path for path in images if not os.path.isfile(path)]
+        if missing:
+            comm.close()
+            raise UsageError(f"%%ask cannot read the image {missing[0]}")
         trace = Trace.enabled() if option == "--trace" else Trace.disabled()
 
         with tempfile.TemporaryDirectory(prefix="yukti-") as root:
@@ -179,7 +194,7 @@ class YuktiMagics(Magics):
                 if option == "--debug":
                     comm.close()
                     trace.close()
-                    return DebugPayload(server.debug_details(transcript))
+                    return DebugPayload(server.debug_details(transcript, images))
 
                 trace.write(
                     "input",
@@ -331,6 +346,7 @@ class YuktiMagics(Magics):
                 try:
                     answer = server.run(
                         transcript,
+                        images,
                         on_delta=lambda delta: show(stream.feed(delta)),
                         on_event=lambda event: trace.write("codex_event", event),
                         on_tool=show_tool,

@@ -14,6 +14,8 @@ transcript:
 	edges=kg.transcript.edges
 claude:
 	edges=kg.claude.edges
+image:
+	edges=kg.image.edges
 palette=kg.palette
 code_source=../../
 
@@ -105,3 +107,29 @@ claude:
 		turn: Steps 4 to 6 — stream, answer tool calls, finish
 			nodes=ask-magic,claude-code,claude-cli,tool-item
 			caption="Deltas reach on_delta as in the Codex path. A notebook tool call arrives as a control request and is answered in the kernel. A built-in tool is allowed, translated to a Codex item and shown."
+image:
+	source=image
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=frontend,ask-magic,question-images,app-server,claude-code
+	sequence_message=message
+	sequence_fragment=fragment
+	sequence_operand=operand
+	sequence_operand_note=operand_note
+	color_by=step
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="Proposed view, pending review: pasting an image into an %%ask cell. The paste saves a file and writes a Markdown reference into the cell. The turn reads the reference, checks the file, and hands the path to the backend in the form that backend accepts. trackImagePastes, turn_input and user_content are calls inside their owners, not participants."
+	slides:
+		paste: Step 1 - paste saves a file and a reference
+			nodes=frontend,ask-magic
+			caption="The paste handler saves the image under yukti-images next to the notebook and inserts a Markdown reference at the cursor. A code cell has no attachments, so the file is the only place the image can live."
+		read: Steps 2 to 3 - read and check the paths
+			nodes=ask-magic,question-images,frontend
+			caption="question_images returns the paths in the cell. %%ask makes them absolute and stops with a UsageError when one file is missing."
+		send: Step 4 - one image form for each backend
+			nodes=ask-magic,app-server,claude-code
+			caption="Codex receives the absolute path as a localImage item. Claude Code receives the file bytes as a base64 image block."

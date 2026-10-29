@@ -1,5 +1,5 @@
-import type { JupyterFrontEndPlugin } from '@jupyterlab/application';
-import { Clipboard } from '@jupyterlab/apputils';
+import type { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/application';
+import { Clipboard, showErrorMessage } from '@jupyterlab/apputils';
 import { CodeCell } from '@jupyterlab/cells';
 import type { Cell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
 import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
@@ -50,6 +50,7 @@ const RULE_VAR = '--yukti-ask-rule';
 const RULE_COLOR = 'color-mix(in srgb, var(--jp-ui-font-color1) 30%, transparent)';
 const ASK_WRAP_PLUGIN_ID = 'yukti:ask-wrap';
 const EDIT_CLASS = 'yukti-edit-output';
+const FENCE_COPY_CLASS = 'yukti-copy-fence';
 const EDITING_CLASS = 'yukti-editing';
 const AREA_CLASS = 'yukti-edit-area';
 const AREA_MAX_VH = 35;
@@ -125,6 +126,14 @@ const ASK_STYLE = tint(ASK_CLASS, 'var(--jp-error-color1)') +
   font-size: var(--jp-ui-font-size1);
   line-height: 1;
   cursor: pointer;
+}
+.${ASK_CLASS} .jp-RenderedMarkdown pre {
+  position: relative;
+}
+.${ASK_CLASS} .${FENCE_COPY_CLASS} {
+  top: auto;
+  bottom: 4px;
+  right: 4px;
 }
 .${ASK_CLASS} .jp-OutputArea-child:hover .${EDIT_CLASS},
 .${ASK_CLASS} .${EDIT_CLASS}:focus {
@@ -917,13 +926,138 @@ function trackOutputEdits(panel: NotebookPanel): void {
   });
 }
 
+/**
+ * Offer one copy button on the code fence the pointer is over, inside the
+ * Markdown outputs of ``%%ask`` cells only.
+ *
+ * The button reuses the pencil's class, so it looks and hides the same way,
+ * and follows the pointer for the same reason the pencil does.
+ *
+ * It sits at the bottom right, so it never covers the pencil when an answer
+ * opens with a fence.
+ *
+ * Pro: one click copies a command or a snippet without selecting it by hand.
+ * Con: a long last line hides a few characters under it until the pointer
+ * leaves.
+ */
+function trackFenceCopies(panel: NotebookPanel): void {
+  const button = document.createElement('button');
+  button.className = `${EDIT_CLASS} ${FENCE_COPY_CLASS}`;
+  button.textContent = '⧉';
+  button.title = 'Copy this code';
+  button.setAttribute('aria-label', 'Copy this code');
+
+  panel.node.addEventListener('mouseover', event => {
+    const target = event.target as Element | null;
+    const fence = target?.closest('.jp-RenderedMarkdown pre') ?? null;
+    if (fence == null || fence.closest(`.${ASK_CLASS}`) == null) {
+      return;
+    }
+    if (fence !== button.parentElement) {
+      button.textContent = '⧉';
+      fence.appendChild(button);
+    }
+  });
+
+  button.addEventListener('click', event => {
+    event.stopPropagation();
+    const fence = button.parentElement;
+    if (fence == null) {
+      return;
+    }
+    const code = Array.from(fence.childNodes)
+      .filter(node => node !== button)
+      .map(node => node.textContent ?? '')
+      .join('');
+    Clipboard.copyToSystem(code);
+    button.textContent = '✓';
+  });
+}
+
+type Contents = JupyterFrontEnd['serviceManager']['contents'];
+
+// Not hidden, because the Jupyter server refuses to save under a dot folder.
+const IMAGE_DIR = 'yukti-images';
+
+function base64(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Save one pasted image beside the notebook and return its path relative to
+ * the notebook, which is the directory the kernel starts in.
+ */
+async function saveImage(
+  contents: Contents,
+  notebookPath: string,
+  file: File
+): Promise<string> {
+  const dir = PathExt.dirname(notebookPath);
+  const extension = file.type.split('/')[1] || 'png';
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const relative = `${IMAGE_DIR}/${stamp}.${extension}`;
+  await contents.save(PathExt.join(dir, IMAGE_DIR), { type: 'directory' });
+  await contents.save(PathExt.join(dir, relative), {
+    type: 'file',
+    format: 'base64',
+    content: await base64(file)
+  });
+  return relative;
+}
+
+/**
+ * Turn an image pasted into an ``%%ask`` cell into a file and a Markdown
+ * reference at the cursor, which ``question_images`` sends with the turn.
+ *
+ * nbformat gives a code cell no attachments, so the image lives under
+ * ``IMAGE_DIR`` next to the notebook. The listener runs in the capture phase,
+ * so the editor never pastes the image's file name as text. A paste with no
+ * image passes through untouched.
+ *
+ * Pro: the image survives a rerun and a reload, and the .ipynb stays small.
+ * Con: a notebook copied alone leaves its images behind.
+ */
+function trackImagePastes(panel: NotebookPanel, contents: Contents): void {
+  panel.node.addEventListener(
+    'paste',
+    event => {
+      const cell = panel.content.activeCell;
+      const target = event.target as Node | null;
+      if (cell == null || !asksCodex(cell) || !cell.node.contains(target)) {
+        return;
+      }
+      const file = Array.from(event.clipboardData?.files ?? []).find(item =>
+        item.type.startsWith('image/')
+      );
+      if (file == null) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      saveImage(contents, panel.context.path, file)
+        .then(relative => cell.editor?.replaceSelection?.(`![](${relative})\n`))
+        .catch(error =>
+          showErrorMessage('Yukti could not save the pasted image', error)
+        );
+    },
+    true
+  );
+}
+
 const editOutputPlugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:edit-ask-output',
   autoStart: true,
   requires: [INotebookTracker],
-  activate: (_app, tracker: INotebookTracker) => {
+  activate: (app, tracker: INotebookTracker) => {
     tracker.widgetAdded.connect((_sender, panel) => {
       trackOutputEdits(panel);
+      trackFenceCopies(panel);
+      trackImagePastes(panel, app.serviceManager.contents);
     });
   }
 };
@@ -1137,10 +1271,16 @@ type CellFlag = {
  * read the active cell, so the button has to be told when that cell changes
  * and when its own click lands.
  *
+ * The command acts on every selected cell, the way JupyterLab's own command
+ * mode keys do, so a Shift+click range takes one key press. The active cell
+ * decides the new state, and every selected cell receives that state, so a
+ * mixed selection ends uniform instead of each cell flipping on its own.
+ *
  * Pro: JupyterLab owns the button, so it keeps the native look, reaches the
  * command palette, and accepts a keyboard shortcut.
  * Con: one cell toolbar exists at a time and it follows the active cell, so
- * the button acts on the clicked cell, never on the hovered one.
+ * the button acts on the clicked cell and its selection, never on the hovered
+ * one.
  */
 function flagPlugin(id: string, flag: CellFlag): JupyterFrontEndPlugin<void> {
   return {
@@ -1159,11 +1299,16 @@ function flagPlugin(id: string, flag: CellFlag): JupyterFrontEndPlugin<void> {
         isEnabled: () => tracker.activeCell != null,
         isToggled: on,
         execute: () => {
-          const cell = tracker.activeCell;
-          if (cell == null) {
+          const notebook = tracker.currentWidget?.content;
+          if (notebook == null || notebook.activeCell == null) {
             return;
           }
-          flag.write(cell.model, !flag.read(cell.model));
+          const next = !flag.read(notebook.activeCell.model);
+          for (const cell of notebook.widgets) {
+            if (notebook.isSelectedOrActive(cell)) {
+              flag.write(cell.model, next);
+            }
+          }
           app.commands.notifyCommandChanged(flag.command);
         }
       });

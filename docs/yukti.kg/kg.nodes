@@ -20,7 +20,7 @@ output-boundary: truncate
 	description=The function that holds one string under a byte limit. It keeps the head and the tail, and names how much it cut.
 	code=[truncate](../../yukti/context.py){show=symbol symbol=truncate kind=Function focus=all}
 settings: parse_settings
-	description=The function that reads a %%yukti cell. A backend line picks codex or claude and sets the default model of that backend. A model the backend cannot run is refused.
+	description=The function that reads a %%yukti cell. A backend line picks codex or claude and sets the default model of that backend. A model the backend cannot run is refused. An empty %%yukti cell or %yukti shows the settings table in force (summary). %%yukti help shows the vocabulary (help_text); help_transform rewrites both empty forms to the line magic because IPython refuses an empty cell magic. The key idle_timeout (whole seconds above 0, default 600) sets how long the backend may stay silent (idle-timeout).
 	code=[parse_settings](../../yukti/settings.py){show=symbol symbol=parse_settings kind=Function focus="match[BACKENDS[raw][] match[cannot run model]" context=2}
 claude-code: Claude Code backend
 	description=The class that gives %%ask the same contract as the Codex App Server, over the user's own claude -p process. It reuses the pipe reader and replaces the protocol. Notebook tools stay in the kernel.
@@ -36,3 +36,24 @@ claude-cli: claude -p process
 tool-item: tool_item
 	description=The function that turns a Claude tool_use block into the Codex item shape. tool_line and tool_detail then stay unchanged. It is a call inside ClaudeCode, not a peer of it.
 	code=[tool_item](../../yukti/claude_code.py){show=symbol symbol=tool_item kind=Function focus=all}
+fence-copy: trackFenceCopies
+	description=The function that adds one copy button to the code fence under the pointer, inside the Markdown outputs of %%ask cells only (yukti-ask-cell). The button reuses EDIT_CLASS, the class of the edit-output pencil, so it shows and hides the same way, and FENCE_COPY_CLASS moves it to the bottom right of the fence so it never covers the pencil. A click copies the fence text through Clipboard.copyToSystem and shows a check mark. editOutputPlugin wires it next to trackOutputEdits. It is a call inside the frontend, not a peer of it.
+	code=[trackFenceCopies](../../yukti_frontend/src/index.ts){show=symbol symbol=trackFenceCopies kind=Function focus="match[fence.closest(] match[Clipboard.copyToSystem(code)]" context=2}
+	decision=The button sits at the bottom right. Pro: one click copies a command without selecting it. Con: a long last line hides a few characters under the button until the pointer leaves.
+image-paste: trackImagePastes
+	description=The function that turns an image pasted into an %%ask cell into a file and a Markdown reference. It listens for paste in the capture phase, so the editor never pastes the file name as text. saveImage writes the image through the Jupyter contents API as yukti-images/<ISO stamp>.<ext> next to the notebook, then ![](yukti-images/<file>) goes in at the cursor. A paste with no image passes through. editOutputPlugin wires it next to trackFenceCopies. It is a call inside the frontend, not a peer of it.
+	code=[trackImagePastes](../../yukti_frontend/src/index.ts){show=symbol symbol=trackImagePastes kind=Function focus="match[saveImage(contents, panel.context.path, file)] match[replaceSelection?.(]" context=2}
+	decision=The image is a file, not a cell attachment, because an nbformat code cell has no attachments. The folder is yukti-images, not a dot folder, because jupyter_server refuses hidden paths. Pro: the image survives a rerun and a reload, and the notebook stays small. Con: a notebook copied alone leaves its images behind.
+question-images: question_images
+	description=The function that returns the Markdown image paths in the %%ask question, in order, with the IMAGE_REFERENCE regex. It is a call inside %%ask, not a peer of it.
+	code=[question_images](../../yukti/context.py){show=symbol symbol=question_images kind=Function focus=all}
+turn-input: turn_input
+	description=The function that builds the turn/start input of the Codex App Server. It is the transcript as a text item, then one localImage item with the absolute path for each image. It is a call inside AppServer, not a peer of it.
+	code=[turn_input](../../yukti/app_server.py){show=symbol symbol=turn_input kind=Function focus=all}
+user-content: user_content
+	description=The function that builds the content of the claude stream-json user message. The CLI reads no image path from a user message, so each file travels as a base64 image block after the text block. A turn with no image keeps the plain string. It is a call inside ClaudeCode, not a peer of it.
+	code=[user_content](../../yukti/claude_code.py){show=symbol symbol=user_content kind=Function focus=all}
+idle-timeout: AppServer._read
+	description=The method that reads one message from the backend stdout. Each call waits at most idle_timeout seconds for the next line. A line resets the wait, so a long turn that keeps streaming never expires. Silence for idle_timeout seconds raises TimeoutError that names the idle_timeout setting. ClaudeCode inherits it. It is a call inside AppServer, not a peer of it.
+	code=[AppServer._read](../../yukti/app_server.py){show=symbol symbol=AppServer._read kind=Method focus="match[self._line(time.monotonic() + self.idle_timeout)] match[raise TimeoutError(]" context=3}
+	decision=A rolling idle timeout replaces one deadline set when the process opened. The old deadline was now + 300 s and every read used it, so any %%ask turn longer than 5 minutes raised "Claude Code timed out" while it was still streaming. The limit is the %%yukti key idle_timeout (whole seconds above 0, default 600), and the constructor timeout argument is removed from AppServer and ClaudeCode. Pro: only a silent backend is stopped, and the user can raise the limit. Con: a backend that sends a line every few seconds without finishing is never stopped.

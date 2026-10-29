@@ -24,7 +24,7 @@ def reader(server: Any, source: int) -> Any:
     server._pending = b""
     server._selector = selectors.DefaultSelector()
     server._selector.register(source, selectors.EVENT_READ)
-    server._deadline = time.monotonic() + 5
+    server.idle_timeout = 5
     return server
 
 
@@ -239,6 +239,31 @@ class ReadTest(unittest.TestCase):
         self.addCleanup(server._selector.close)
 
         self.assertEqual(server._read()["method"], "turn/completed")
+
+    def test_a_turn_that_keeps_talking_outlives_the_idle_timeout(self) -> None:
+        read, write = os.pipe()
+        os.write(write, b'{"method":"item/started"}\n')
+        self.addCleanup(os.close, read)
+        self.addCleanup(os.close, write)
+        server = reader(AppServer.__new__(AppServer), read)
+        self.addCleanup(server._selector.close)
+
+        # An hour after the reader opened, a line that just arrived still reads.
+        later = time.monotonic() + 3600
+        with patch("yukti.app_server.time.monotonic", return_value=later):
+            self.assertEqual(server._read()["method"], "item/started")
+
+    def test_silence_past_the_idle_timeout_names_the_setting(self) -> None:
+        read, write = os.pipe()
+        self.addCleanup(os.close, read)
+        self.addCleanup(os.close, write)
+        server = reader(AppServer.__new__(AppServer), read)
+        server.NAME = "Claude Code"
+        server.idle_timeout = 0.01
+        self.addCleanup(server._selector.close)
+
+        with self.assertRaisesRegex(TimeoutError, "idle_timeout"):
+            server._read()
 
 
 if __name__ == "__main__":

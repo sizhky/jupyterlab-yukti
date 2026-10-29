@@ -1,0 +1,45 @@
+i1: frontend -> ask-magic sends
+	step=s1
+	message=async
+	note=![](yukti-images/stamp.png)
+	description=A paste of an image in an %%ask cell saves a file next to the notebook and writes this reference into the cell source. The turn that runs later reads the reference from the cell text. Nothing travels with the paste itself.
+	code=[trackImagePastes](../../yukti_frontend/src/index.ts){show=symbol symbol=trackImagePastes kind=Function focus="match[saveImage(contents, panel.context.path, file)] match[replaceSelection?.(]" context=2}
+i2: ask-magic -> question-images builds
+	step=s2
+	pair=p-images
+	message=sync
+	note=question_images(cell)
+	description=The cell runs and %%ask reads the image paths out of the question text.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[question_images(cell)]" context=3}
+i3: question-images -> ask-magic returns
+	step=s2
+	pair=p-images
+	note=relative paths
+	description=The paths come back as written in the cell. %%ask makes each one absolute, because the kernel starts in the notebook directory.
+	code=[question_images](../../yukti/context.py){show=symbol symbol=question_images kind=Function focus="match[return IMAGE_REFERENCE.findall(question)]" context=2}
+i4: ask-magic -> frontend closes
+	step=s3
+	fragment=break:file missing
+	operand=[a path is not a file]
+	operand_note=The notebook moved without its yukti-images folder, or the file was removed. The comm closes and a UsageError names the first missing path, so no model call is made.
+	note=UsageError
+	description=The check runs before any process starts. A missing image stops the turn with a message, not a silent answer that ignores the image.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[if missing:] match[cannot read the image]" context=2}
+i5: ask-magic -> app-server sends
+	step=s4
+	message=sync
+	fragment=alt:backend
+	operand=[backend is codex]
+	operand_note=The Codex App Server takes each image as a localImage item with the absolute path, so the file is read by Codex.
+	note=run(transcript, images)
+	description=turn_input builds the turn/start input: the transcript text, then one localImage item for each path.
+	code=[AppServer.run](../../yukti/app_server.py){show=symbol symbol=AppServer.run kind=Method focus="match[turn_input(transcript, images)]" context=3}
+i6: ask-magic -> claude-code sends
+	step=s4
+	message=sync
+	fragment=alt:backend
+	operand=[backend is claude]
+	operand_note=The claude CLI reads no image path from a user message. user_content reads each file in the kernel process and sends it as a base64 image block. A turn with no image sends the plain string as before.
+	note=run(transcript, images)
+	description=user_content builds the stream-json user message content: the text block, then one base64 image block for each path.
+	code=[ClaudeCode.run](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode.run kind=Method focus="match[user_content(transcript, images)]" context=3}

@@ -6,10 +6,13 @@ from IPython.core.error import UsageError
 from IPython.display import Markdown
 
 from yukti.ask import YuktiMagics
+from yukti.settings import DEFAULTS, parse_settings
 
 
 def build_magic(comm):
     magic = object.__new__(YuktiMagics)
+    # These tests patch the codex AppServer, so they pin the codex backend.
+    magic.settings = parse_settings("backend: codex", DEFAULTS)
     magic.prefixes = MagicMock()
     magic.prefixes.take.return_value = ("request-1", [], "concise", comm)
     magic.shell = MagicMock()
@@ -64,7 +67,7 @@ def test_ask_sends_each_tool_call_to_the_notebook():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event, on_tool, on_action):
+    def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         on_delta("The slow one first.")
         result = on_action("insert_cells", {"cells": first["cells"]})
         assert result.startswith("insert 1 cell: finished, cell_id ")
@@ -96,7 +99,7 @@ def test_a_run_reports_the_output_to_the_model_and_to_the_notebook():
     server.__enter__.return_value = server
     printed = [{"output_type": "stream", "name": "stdout", "text": "55\n"}]
 
-    def run(_transcript, on_delta, on_event, on_tool, on_action):
+    def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         on_delta("Here is the cell.")
         inserted = on_action(
             "insert_cells", {"cells": [{"cell_type": "code", "source": "print(55)"}]}
@@ -141,7 +144,7 @@ def test_a_rewritten_cell_runs_the_source_the_notebook_now_holds():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event, on_tool, on_action):
+    def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         inserted = on_action(
             "insert_cells", {"cells": [{"cell_type": "code", "source": "print(oops)"}]}
         )
@@ -168,7 +171,7 @@ def test_a_run_of_a_cell_no_insert_returned_is_refused():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event, on_tool, on_action):
+    def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         with pytest.raises(RuntimeError, match="ghost"):
             on_action("run_cells", {"cells": [{"cell_id": "ghost"}]})
         return ""
@@ -188,7 +191,7 @@ def test_a_refused_tool_call_never_reaches_the_notebook():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event, on_tool, on_action):
+    def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         with pytest.raises(RuntimeError, match="gone"):
             on_action("replace_cells", {"cells": [{"cell_id": "gone", "source": "1"}]})
         return ""
@@ -198,6 +201,34 @@ def test_a_refused_tool_call_never_reaches_the_notebook():
         magic.ask("", "fix the first cell")
 
     comm.send.assert_not_called()
+
+
+def test_a_missing_image_stops_the_turn_before_the_model_starts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    comm = MagicMock()
+    magic = build_magic(comm)
+
+    with patch("yukti.ask.AppServer") as server, pytest.raises(UsageError):
+        magic.ask("", "what is this?\n![](yukti-images/gone.png)")
+
+    server.assert_not_called()
+    comm.close.assert_called_once_with()
+
+
+def test_a_pasted_image_reaches_the_model_as_an_absolute_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "yukti-images").mkdir()
+    (tmp_path / "yukti-images" / "a.png").write_bytes(b"png")
+    comm = MagicMock()
+    magic = build_magic(comm)
+    server = MagicMock()
+    server.__enter__.return_value = server
+    server.run.return_value = "A chart."
+
+    with patch("yukti.ask.AppServer", return_value=server), patch("yukti.ask.display"):
+        magic.ask("", "what is this?\n![](yukti-images/a.png)")
+
+    assert server.run.call_args.args[1] == [str(tmp_path / "yukti-images" / "a.png")]
 
 
 def test_debug_stops_before_the_model_turn():
@@ -222,7 +253,7 @@ def test_each_message_block_renders_into_its_own_output():
     server = MagicMock()
     server.__enter__.return_value = server
 
-    def run(_transcript, on_delta, on_event, on_tool, on_action):
+    def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         on_delta("Naive recursion.")
         on_action("insert_cells", {"cells": [{"cell_type": "code", "source": "1"}]})
         on_delta("Memoised")

@@ -56,13 +56,14 @@ permissions: elevated
 ```
 
 The cell prints the settings it applied. An empty `%%yukti` cell, or `%yukti`,
-prints the help with the settings in force. Three profiles set them together:
+prints the settings in force. `%%yukti help` prints the vocabulary. Three
+profiles set them together:
 
 | Profile | Sandbox | Working directory | Network | Tools |
 | --- | --- | --- | --- | --- |
-| `sandboxed` (default) | `read-only` | disposable temp directory | off | no |
+| `sandboxed` | `read-only` | disposable temp directory | off | no |
 | `elevated` | `workspace-write` | the kernel's directory | off | yes |
-| `full` | `danger-full-access` | the kernel's directory | on | yes |
+| `full` (default) | `danger-full-access` | the kernel's directory | on | yes |
 
 Any line after `permissions` overrides one value:
 
@@ -81,6 +82,8 @@ approvals: auto_review
 - `run`: `on` or `off`, whether Yukti runs the code cells it inserts
 - `writable_roots`: extra writable directories, separated by commas
 - `approvals`: `never`, or `auto_review` to let a Codex subagent decide
+- `idle_timeout`: seconds the model may stay silent before `%%ask` stops the
+  turn, 600 by default. A turn that keeps streaming has no length limit.
 
 With `elevated` or `full`, Codex may edit files and run commands. Yukti prints
 one line per command and per file it changes. A notebook cannot show an approval
@@ -109,6 +112,13 @@ ran it. Running is on by default, and one line turns it off:
 %%yukti
 run: off
 ```
+
+## Paste a screenshot into a question
+
+Press Cmd+V in an `%%ask` cell while the clipboard holds an image. Yukti saves
+the image as `yukti-images/<time>.png` next to the notebook and writes
+`![](yukti-images/<time>.png)` at the cursor. Each image the question names
+goes to the model with the turn. A paste with no image pastes text as usual.
 
 ## See the exact Codex request
 

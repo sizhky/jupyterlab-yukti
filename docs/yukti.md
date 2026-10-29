@@ -26,4 +26,6 @@ After one pass, you should be able to answer three questions:
 
 The `claude` view shows the same turn with `backend: claude`. `ClaudeCode` checks the Claude subscription login, starts the user's own `claude -p`, answers notebook tool calls in the kernel, and shows built-in tools as Codex items. Anthropic permits subscription use only through the unmodified Claude Code binary, so Yukti never reads or forwards the OAuth credential ([policy](https://code.claude.com/docs/en/legal-and-compliance)).
 
+The `image` view shows a pasted image. `trackImagePastes` saves the image under `yukti-images` and writes a Markdown reference into the cell. `%%ask` reads the paths with `question_images`, stops on a missing file, and passes the paths to the backend. Codex receives a `localImage` path and Claude Code receives a base64 image block.
+
 Hover an arrow for the source statement that performs that exchange. The transcript view isolates the two limits that protect one turn: 8 KB per output and 512 KB for the complete request.

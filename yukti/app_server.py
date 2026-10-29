@@ -360,6 +360,17 @@ def workdir(root: Path, settings: Mapping[str, Any]) -> Path:
     return disposable
 
 
+def turn_input(transcript: str, images: Sequence[str]) -> list[dict[str, str]]:
+    """Return the ``turn/start`` input: the transcript, then each image path.
+
+    >>> turn_input("why?", ["/n/a.png"])
+    [{'type': 'text', 'text': 'why?'}, {'type': 'localImage', 'path': '/n/a.png'}]
+    """
+    return [{"type": "text", "text": transcript}] + [
+        {"type": "localImage", "path": path} for path in images
+    ]
+
+
 class AppServer:
     # The name the reader's errors use, so a backend that reuses the reader
     # names itself.
@@ -369,7 +380,6 @@ class AppServer:
         self,
         root: str,
         settings: Mapping[str, Any] = DEFAULTS,
-        timeout: int = 300,
     ) -> None:
         root_path = Path(root)
         self.settings = dict(settings)
@@ -380,7 +390,7 @@ class AppServer:
 
         environment = os.environ.copy()
         environment["CODEX_HOME"] = str(self.codex_home)
-        self._open(APP_SERVER_COMMAND, environment, timeout)
+        self._open(APP_SERVER_COMMAND, environment)
         self.account: dict[str, Any] = {}
         self.thread_params: dict[str, Any] = {}
         self.thread_id = ""
@@ -394,7 +404,7 @@ class AppServer:
             raise
 
     def _open(
-        self, command: Sequence[str], environment: dict[str, str], timeout: int
+        self, command: Sequence[str], environment: dict[str, str]
     ) -> None:
         """Start ``command`` in ``self.workdir`` and own its stdout reader."""
         self.environment = environment
@@ -417,7 +427,9 @@ class AppServer:
         self._pending = b""
         self._selector = selectors.DefaultSelector()
         self._selector.register(self._stdout, selectors.EVENT_READ)
-        self._deadline = time.monotonic() + timeout
+        # Each read waits this long for the next line, so a turn that keeps
+        # streaming can run for as long as it keeps talking.
+        self.idle_timeout = self.settings.get("idle_timeout", DEFAULTS["idle_timeout"])
         self._next_request_id = 0
         self.sent: list[dict[str, Any]] = []
 
@@ -468,7 +480,13 @@ class AppServer:
                 return line
 
     def _read(self) -> dict[str, Any]:
-        line = self._line(self._deadline)
+        try:
+            line = self._line(time.monotonic() + self.idle_timeout)
+        except TimeoutError:
+            raise TimeoutError(
+                f"{self.NAME} sent nothing for {self.idle_timeout} s; "
+                "raise idle_timeout in a %%yukti cell"
+            ) from None
         if line:
             return json.loads(line)
         assert self.process.stderr
@@ -550,6 +568,7 @@ class AppServer:
     def run(
         self,
         transcript: str,
+        images: Sequence[str] = (),
         on_delta: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
         on_tool: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -563,7 +582,7 @@ class AppServer:
                 "id": request_id,
                 "params": {
                     "threadId": self.thread_id,
-                    "input": [{"type": "text", "text": transcript}],
+                    "input": turn_input(transcript, images),
                 },
             }
         )
@@ -644,7 +663,9 @@ class AppServer:
             }
         )
 
-    def debug_details(self, transcript: str) -> dict[str, Any]:
+    def debug_details(
+        self, transcript: str, images: Sequence[str] = ()
+    ) -> dict[str, Any]:
         return {
             "command": list(APP_SERVER_COMMAND),
             "settings": self.settings,
@@ -653,7 +674,7 @@ class AppServer:
                 "planType": self.account.get("planType"),
             },
             "thread/start": self.thread_params,
-            "turn/start input": [{"type": "text", "text": transcript}],
+            "turn/start input": turn_input(transcript, images),
         }
 
     def _interrupt_turn(self) -> None:

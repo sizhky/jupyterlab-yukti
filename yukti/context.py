@@ -6,6 +6,7 @@ public functions that no test exercised. They differed by one word, so one
 helper carries both limits now, and ``execute`` bounds a cell output with it.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -31,6 +32,22 @@ def truncate(content: str, limit: int, label: str) -> str:
     tail = data[-half:].decode("utf-8", errors="ignore")
     size_kb = len(data) // 1024
     return f"{head}\n...\n[{label} truncated: original {size_kb} KB]\n...\n{tail}"
+
+
+# A Markdown image, ``![alt](path)``, which is the line a paste into an
+# ``%%ask`` cell writes.
+IMAGE_REFERENCE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
+
+
+def question_images(question: str) -> list[str]:
+    """Return the image paths the question names, in the order it names them.
+
+    >>> question_images("why?\\n![](.yukti/images/a.png) and ![x](b.jpg)")
+    ['.yukti/images/a.png', 'b.jpg']
+    >>> question_images("no image")
+    []
+    """
+    return IMAGE_REFERENCE.findall(question)
 
 
 def build_transcript(cells: Sequence[Mapping[str, Any]], question: str) -> str:

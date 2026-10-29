@@ -19,12 +19,14 @@ check turns a lost tool into an error line.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .actions import tool_specs
 from .app_server import (
@@ -35,7 +37,7 @@ from .app_server import (
     base_instructions,
     workdir,
 )
-from .settings import DEFAULTS
+from .settings import DEFAULTS, PROFILES
 
 
 # The MCP server name the CLI prefixes to every notebook tool.
@@ -129,12 +131,13 @@ def claude_command(settings: Mapping[str, Any], instructions: str) -> list[str]:
     tools; ``workspace-write`` turns on the Claude Code sandbox, which bounds
     Bash to the working directory; ``danger-full-access`` runs without it.
 
-    >>> command = claude_command(DEFAULTS | {"model": "sonnet"}, "be Yukti")
+    >>> command = claude_command(DEFAULTS | PROFILES["sandboxed"] | {"model": "sonnet"},
+    ...     "be Yukti")
     >>> command[command.index("--tools") + 1]
     ''
     >>> command[command.index("--allowedTools") + 1]
     'mcp__yukti__insert_cells,mcp__yukti__replace_cells,mcp__yukti__run_cells'
-    >>> command = claude_command(DEFAULTS | {"model": "sonnet", "tools": True,
+    >>> command = claude_command(DEFAULTS | PROFILES["sandboxed"] | {"model": "sonnet", "tools": True,
     ...     "sandbox": "workspace-write", "writable_roots": ["/"]}, "")
     >>> json.loads(command[command.index("--settings") + 1])["sandbox"]["enabled"]
     True
@@ -225,6 +228,30 @@ def result_text(block: Mapping[str, Any]) -> str:
     )
 
 
+def user_content(transcript: str, images: Sequence[str]) -> Any:
+    """Return the user message content: the transcript, then each image inline.
+
+    The CLI reads no image path from a user message, so each file travels as
+    a base64 block. A turn without images keeps the plain string.
+
+    >>> user_content("why?", [])
+    'why?'
+    """
+    if not images:
+        return transcript
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": transcript}]
+    for path in images:
+        media_type = mimetypes.guess_type(path)[0] or "image/png"
+        data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        blocks.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            }
+        )
+    return blocks
+
+
 class ClaudeCode(AppServer):
     """The ``AppServer`` contract over ``claude -p``.
 
@@ -238,7 +265,6 @@ class ClaudeCode(AppServer):
         self,
         root: str,
         settings: Mapping[str, Any] = DEFAULTS,
-        timeout: int = 300,
     ) -> None:
         self.settings = dict(settings)
         self.workdir = workdir(Path(root), self.settings)
@@ -259,7 +285,7 @@ class ClaudeCode(AppServer):
         self.turn_id = ""
         self._on_action: Optional[Callable[[str, Any], str]] = None
         self._on_tool: Optional[Callable[[Mapping[str, Any]], None]] = None
-        self._open(command, environment, timeout)
+        self._open(command, environment)
         try:
             self._control({"subtype": "initialize", "hooks": None})
         except Exception:
@@ -369,6 +395,7 @@ class ClaudeCode(AppServer):
     def run(
         self,
         transcript: str,
+        images: Sequence[str] = (),
         on_delta: Optional[Callable[[str], None]] = None,
         on_event: Optional[Callable[[dict[str, Any]], None]] = None,
         on_tool: Optional[Callable[[Mapping[str, Any]], None]] = None,
@@ -380,7 +407,10 @@ class ClaudeCode(AppServer):
             {
                 "type": "user",
                 "session_id": "",
-                "message": {"role": "user", "content": transcript},
+                "message": {
+                    "role": "user",
+                    "content": user_content(transcript, images),
+                },
                 "parent_tool_use_id": None,
             }
         )
@@ -482,7 +512,9 @@ class ClaudeCode(AppServer):
                     }
                 )
 
-    def debug_details(self, transcript: str) -> dict[str, Any]:
+    def debug_details(
+        self, transcript: str, images: Sequence[str] = ()
+    ) -> dict[str, Any]:
         return {
             "command": self.thread_params["command"],
             "settings": self.settings,
@@ -491,6 +523,7 @@ class ClaudeCode(AppServer):
                 "subscriptionType": self.account.get("subscriptionType"),
             },
             "user message": transcript,
+            "images": list(images),
         }
 
     def _interrupt_turn(self) -> None:
