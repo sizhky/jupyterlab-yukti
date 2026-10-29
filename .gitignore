@@ -228,3 +228,4 @@ yukti/_version.py
 node_modules/
 *.tsbuildinfo
 .venv-release/
+.dev-stamps/

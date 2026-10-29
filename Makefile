@@ -46,7 +46,7 @@ SCRUB = rm -rf $(1) 2>/dev/null || rm -rf $(1) 2>/dev/null \
 
 SHELL := /bin/bash
 .NOTPARALLEL:
-.PHONY: help bump stage clean guard test build check verify tag publish push dry ship release
+.PHONY: help bump stage clean guard test build check verify tag publish push dry ship release dev watch
 
 help:  ## show this help
 	@printf '\n  %s %s  ->  %s\n\n' "$(DIST)" "$(VERSION)" "$(REPO)"
@@ -136,3 +136,37 @@ ship: $(GATES) tag publish push  ## gates, tag, publish, push -- no bump
 release:  ## stage then ship, in one commit
 	@$(SUB) stage
 	@$(SUB) ship
+
+# Dev loop. DEVENV holds an editable install of this repo and a symlink from
+# its labextensions folder to yukti_frontend/labextension, so each step below
+# rebuilds only the part whose inputs are newer than its last build.
+DEVENV ?= $(HOME)/.venv
+DEVBIN := $(DEVENV)/bin
+STAMPS := .dev-stamps
+LABEXT := yukti_frontend/labextension/package.json
+FRONTEND_IN := $(wildcard yukti_frontend/src/*.ts yukti_frontend/schema/*.json) \
+	yukti_frontend/tsconfig.json package.json
+
+dev: $(STAMPS)/install $(LABEXT) $(STAMPS)/kernel  ## refresh DEVENV with every changed part
+
+# `jupyter labextension build` must come from DEVENV, so the build matches the
+# JupyterLab that serves it.
+$(LABEXT): $(FRONTEND_IN)
+	PATH="$(DEVBIN):$$PATH" npm run build:prod
+	@touch $@
+	@echo 'dev: frontend rebuilt; reload the JupyterLab browser tab'
+
+# An editable install reads Python source live; only new metadata or new
+# dependencies need a reinstall.
+$(STAMPS)/install: pyproject.toml
+	@mkdir -p $(STAMPS)
+	uv pip install -q --python $(DEVBIN)/python -e .
+	@touch $@
+
+$(STAMPS)/kernel: $(wildcard yukti/*.py)
+	@mkdir -p $(STAMPS)
+	@touch $@
+	@echo 'dev: backend changed; restart the kernel'
+
+watch:  ## run `make dev` every 2 seconds until Ctrl+C
+	@while :; do $(SUB) -s dev; sleep 2; done
