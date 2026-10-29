@@ -162,6 +162,9 @@ class YuktiMagics(Magics):
         option = line.strip()
         if option not in {"", "--debug", "--trace"}:
             raise UsageError("%%ask accepts only --debug or --trace")
+        # No kernel means no frontend to answer, as under nbdev-test (execnb CaptureShell).
+        if getattr(self.shell, "kernel", None) is None:
+            return None
 
         request_id, cells, mode, comm = self.prefixes.take()
         transcript = build_transcript(cells, cell)

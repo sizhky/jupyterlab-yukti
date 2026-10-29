@@ -254,3 +254,10 @@ def test_each_message_block_renders_into_its_own_output():
     first, _line, second = (handle for _, handle in blocks)
     first.update.assert_not_called()
     assert second.update.call_args.args[0].data == "Memoised version."
+
+
+def test_ask_does_nothing_without_a_kernel():
+    magic = build_magic(MagicMock())
+    magic.shell.kernel = None
+    assert magic.ask("", "What is this?") is None
+    magic.prefixes.take.assert_not_called()
