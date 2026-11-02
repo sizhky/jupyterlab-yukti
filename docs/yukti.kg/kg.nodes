@@ -61,3 +61,27 @@ tool-payload: tool_payload
 	description=The function that checks one notebook tool call and returns the payload the frontend applies. For insert_cells each cell has a cell_type, a source and an optional after_cell_id. The anchor must be a cell_id in the transcript (the cells above %%ask that are not hidden) or a cell inserted earlier in this turn, the same set replace_cells accepts. Without an anchor a cell goes after the cell inserted last, or below the %%ask cell. Each cell gets a new cell_id. A bad cell or anchor raises, and the model reads the sentence. It is a call inside %%ask, not a peer of it.
 	code=[tool_payload](../../yukti/actions.py){show=symbol symbol=tool_payload kind=Function focus="match[_inserted_cell(cell, allowed)] match[uuid4().hex]" context=2}
 	decision=insert_cells reuses the allowed set of replace_cells for its anchor, so one rule names the cells a tool may touch. Pro: the model cannot anchor on a cell the transcript hid. Con: a cell the reader added after the prefix was sent cannot be an anchor.
+diff-plugin: diffPlugin
+	description=The plugin that adds a Diff toolbar button to each notebook. A press reads the staged cells once (fetch-staged) and paints them (paint-diff). A second press clears the view (clear-diff). While the view is on, every change of the shared model repaints after 300 ms with the staged cells kept from the press, so colours follow edits without another git call. It is a call inside the frontend, not a peer of it.
+	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[old = await fetchStaged(panel)] match[paintDiff(panel.content, old)] match[clearDiff(panel.content)]" context=2}
+	decision=The staged cells are read once per press, not on each repaint. Pro: typing never starts a git process. Con: a git add made after the press shows only after the reader presses Diff twice.
+fetch-staged: fetchStaged
+	description=The function that asks the kernel for the staged copy of the notebook. The frontend has no git. It sends a silent execute request with a user_expressions call to yukti.staged.staged_json, so it needs no %load_ext yukti and adds nothing to the history. A notebook with no kernel, or an error reply, throws, and the plugin shows the message.
+	code=[fetchStaged](../../yukti_frontend/src/index.ts){show=symbol symbol=fetchStaged kind=Function focus="match[user_expressions: {] match[throw new Error(`${result?.ename]" context=3}
+staged-json: staged_json
+	description=The function that wraps the staged cells in IPython.display.JSON, so a user_expressions reply carries them as application/json. It is a call inside the kernel module yukti.staged, not a peer of it.
+	code=[staged_json](../../yukti/staged.py){show=symbol symbol=staged_json kind=Function focus=all}
+staged-cells: staged_cells
+	description=The function that reads the notebook as the git index holds it. It runs git show :./<name> in the notebook folder and returns each cell as id, cell_type and source. A notebook the index does not hold returns an empty list, so every live cell reads as added. A folder outside a repository raises RuntimeError with the git message.
+	code=[staged_cells](../../yukti/staged.py){show=symbol symbol=staged_cells kind=Function focus="match[\"show\", f\":./{file.name}\"],] match[raise RuntimeError(result.stderr.strip())]" context=2}
+	decision=The index copy is the baseline, not HEAD. Pro: the diff shows what git add would add, and a staged notebook reads as clean. Con: a notebook not yet staged shows every cell as added.
+align-cells: alignCells
+	description=The function that pairs live cells with staged cells along their longest common subsequence. Each row holds a live index, a staged index, or both. The keys are cell ids, or sources when a staged cell has no id. A cell that moved reads as one deletion and one addition. It is a call inside paint-diff, not a peer of it.
+	code=[alignCells](../../yukti_frontend/src/index.ts){show=symbol symbol=alignCells kind=Function focus="match[lcs[i][j] = live[i] === old[j]] match[rows.push([null, j++])]" context=2}
+paint-diff: paintDiff
+	description=The function that puts the staged source in a right-hand pane of each live cell (grid layout). A paired cell with different source gets the changed class (orange outline). A live cell with no pair gets the added class (green) and an empty pane. A staged cell with no live pair becomes a red row, empty on the left, inside the next live cell, or after the last one, because the windowed notebook owns the space between cells. It clears the previous paint first.
+	code=[paintDiff](../../yukti_frontend/src/index.ts){show=symbol symbol=paintDiff kind=Function focus="match[const rows = alignCells(] match[cell.addClass(DIFF_ADDED_CLASS)] match[cells[cells.length - 1].node.append(...gone)]" context=2}
+	decision=A deleted cell is a row inside the next live cell, not a node between cells. Pro: it survives windowing and needs no cell of its own. Con: the row moves with the cell that follows it.
+clear-diff: clearDiff
+	description=The function that removes the diff class, the staged panes, the deleted rows and the changed and added classes from the notebook. paintDiff calls it first, so a repaint never stacks panes.
+	code=[clearDiff](../../yukti_frontend/src/index.ts){show=symbol symbol=clearDiff kind=Function focus=all}

@@ -1,0 +1,69 @@
+f1: diff-plugin -> fetch-staged starts
+	step=s1
+	message=sync
+	note=Diff pressed
+	description=The first press of the button starts the read. A second press skips it and clears the view.
+	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[old = await fetchStaged(panel)]" context=3}
+f2: fetch-staged -> staged-json sends
+	step=s1
+	pair=p-staged
+	message=sync
+	note=user_expressions: staged_json(path)
+	description=A silent execute request with empty code. The path is the server root joined to the notebook path, so git runs in the right folder.
+	code=[fetchStaged](../../yukti_frontend/src/index.ts){show=symbol symbol=fetchStaged kind=Function focus="match[user_expressions: {]" context=4}
+f3: staged-json -> staged-cells builds
+	step=s1
+	pair=p-cells
+	message=sync
+	note=staged_cells(path)
+	description=The kernel module reads the index copy of the notebook.
+	code=[staged_json](../../yukti/staged.py){show=symbol symbol=staged_json kind=Function focus="match[return JSON(staged_cells(path))]" context=2}
+f4: staged-cells -> staged-json returns
+	step=s1
+	pair=p-cells
+	fragment=break:not a repository
+	operand=[git reports no repository]
+	operand_note=staged_cells raises RuntimeError with the git message. The reply carries the error, fetchStaged throws, and the plugin shows it in a dialog. A notebook outside the index is not an error and returns an empty list.
+	note=id, cell_type, source for each staged cell
+	description=The cells are plain dictionaries with the source joined into one string.
+	code=[staged_cells](../../yukti/staged.py){show=symbol symbol=staged_cells kind=Function focus="match[raise RuntimeError(result.stderr.strip())] match[\"source\": \"\".join(cell.get(\"source\", \"\")),]" context=2}
+f5: staged-json -> fetch-staged returns
+	step=s1
+	pair=p-staged
+	note=application/json list of staged cells
+	description=fetchStaged reads the list from the user_expressions reply and hands it to the plugin.
+	code=[fetchStaged](../../yukti_frontend/src/index.ts){show=symbol symbol=fetchStaged kind=Function focus="match[return result.data['application/json'] as StagedCell[]]" context=3}
+f6: diff-plugin -> paint-diff starts
+	step=s2
+	message=sync
+	note=paintDiff(notebook, old)
+	description=The plugin paints at once, then connects the shared model changes to a repaint.
+	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[paintDiff(panel.content, old);]" context=3}
+f7: paint-diff -> align-cells builds
+	step=s2
+	pair=p-align
+	message=sync
+	note=alignCells(live keys, staged keys)
+	description=The keys are cell ids when every staged cell has one, otherwise sources.
+	code=[paintDiff](../../yukti_frontend/src/index.ts){show=symbol symbol=paintDiff kind=Function focus="match[const byId = ] match[const rows = alignCells(]" context=1}
+f8: align-cells -> paint-diff returns
+	step=s2
+	pair=p-align
+	note=rows of live index, staged index
+	description=A row with both indices is a pair. A row with only a live index is an added cell. A row with only a staged index is a deleted cell.
+	code=[alignCells](../../yukti_frontend/src/index.ts){show=symbol symbol=alignCells kind=Function focus="match[rows.push([i++, j++])] match[rows.push([null, j++])]" context=2}
+f9: diff-plugin -> paint-diff sends
+	step=s3
+	message=async
+	fragment=loop:each edit
+	operand=[the shared model changes]
+	operand_note=The repaint waits 300 ms after the last change, then paints from the staged cells kept at the press. No new git call is made.
+	note=repaint after 300 ms
+	description=Colours follow the edit. The staged panes stay as read.
+	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[timer = window.setTimeout(() => old && paintDiff(panel.content, old), 300)]" context=2}
+f10: diff-plugin -> clear-diff closes
+	step=s4
+	message=sync
+	note=Diff pressed again
+	description=The plugin disconnects the repaint, then removes the panes, rows and classes.
+	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[clearDiff(panel.content);]" context=3}

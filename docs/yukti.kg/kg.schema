@@ -18,6 +18,8 @@ image:
 	edges=kg.image.edges
 action:
 	edges=kg.action.edges
+diff:
+	edges=kg.diff.edges
 palette=kg.palette
 code_source=../../
 
@@ -151,3 +153,29 @@ action:
 	edge_label_from=note
 	hover_attrs=description,code
 	caption="Proposed view, pending review: one insert_cells call. tool_payload checks the cells and each optional after_cell_id against the transcript and this turn's inserts, then the frontend inserts each cell after its anchor and tracks it for run_cells and cell_output."
+diff:
+	source=diff
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=diff-plugin,fetch-staged,staged-json,staged-cells,paint-diff,align-cells,clear-diff
+	sequence_message=message
+	sequence_fragment=fragment
+	sequence_operand=operand
+	sequence_operand_note=operand_note
+	color_by=step
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="Proposed view, pending review: the Diff toolbar button. One press reads the staged cells through the kernel, pairs them with the live cells and paints a right-hand pane in each cell. Edits repaint from the cells read at the press. A second press clears the view. alignCells and staged_json are calls inside their owners, not peers."
+	slides:
+		read: Step 1 - read the staged cells through the kernel
+			nodes=diff-plugin,fetch-staged,staged-json,staged-cells
+			caption="The frontend has no git. A silent user_expressions request reaches yukti.staged, which runs git show on the index copy. A notebook outside the index returns no cells, and a folder outside a repository raises."
+		paint: Steps 2 to 3 - pair the cells and paint
+			nodes=diff-plugin,paint-diff,align-cells
+			caption="alignCells pairs cells along their longest common subsequence. Changed cells get an orange outline, added cells green, and deleted cells become red rows. Edits repaint after 300 ms from the cells already read."
+		clear: Step 4 - clear
+			nodes=diff-plugin,clear-diff
+			caption="A second press removes the panes, rows and classes."

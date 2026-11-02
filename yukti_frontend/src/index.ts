@@ -2,7 +2,11 @@ import type { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/applica
 import { Clipboard, showErrorMessage } from '@jupyterlab/apputils';
 import { CodeCell } from '@jupyterlab/cells';
 import type { Cell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
-import { IEditorServices, type IEditorMimeTypeService } from '@jupyterlab/codeeditor';
+import {
+  CodeEditor,
+  IEditorServices,
+  type IEditorMimeTypeService
+} from '@jupyterlab/codeeditor';
 import { PageConfig, PathExt, URLExt } from '@jupyterlab/coreutils';
 import {
   type ICell,
@@ -16,6 +20,7 @@ import {
 } from '@jupyterlab/nbformat';
 import {
   LabIcon,
+  ToolbarButton,
   fileIcon,
   folderIcon,
   notebookIcon
@@ -31,6 +36,7 @@ import { INotebookTree } from '@jupyter-notebook/tree';
 import { IDefaultFileBrowser } from '@jupyterlab/filebrowser';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 import { Widget } from '@lumino/widgets';
+import { Decoration, EditorView } from '@codemirror/view';
 
 const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
@@ -1941,8 +1947,448 @@ const bookmarksPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
+const DIFF_CLASS = 'yukti-diff';
+const DIFF_GRID_CLASS = 'yukti-diff-grid';
+const DIFF_SPLIT_CLASS = 'yukti-diff-split';
+const DIFF_OLD_CLASS = 'yukti-diff-old';
+const DIFF_GONE_CLASS = 'yukti-diff-gone';
+const DIFF_CHANGED_CLASS = 'yukti-diff-changed';
+const DIFF_ADDED_CLASS = 'yukti-diff-added';
+const DIFF_HANDLE_CLASS = 'yukti-diff-handle';
+// The left column's share of the cell, which the handle drags.
+const DIFF_LEFT_VAR = '--yukti-diff-left';
+// Later rules win at equal specificity, so the deleted row and the staged
+// pane come after the rule that puts a split cell's own parts on the left.
+// Each state is a strip on the cell's right edge, not a border.
+// The staged code never wraps, even inside a cell that wraps its own lines.
+const DIFF_STYLE = `
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} {
+  display: grid;
+  grid-template-columns: minmax(0, var(${DIFF_LEFT_VAR}, 50%)) minmax(0, 1fr);
+  column-gap: 8px;
+}
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} > * { grid-column: 1 / -1; }
+.${DIFF_CLASS} .${DIFF_SPLIT_CLASS} > * { grid-column: 1; }
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} > .${DIFF_GONE_CLASS} {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  min-height: 2em;
+  margin-bottom: 4px;
+  box-shadow: inset -4px 0 0 var(--jp-error-color1);
+}
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} > .${DIFF_OLD_CLASS} { grid-column: 2; }
+.${DIFF_OLD_CLASS} {
+  position: relative;
+  min-width: 0;
+  /* No top padding, so the staged editor's top edge meets the live one's. */
+  padding: 0 4px 4px;
+}
+.${DIFF_HANDLE_CLASS} {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.${DIFF_HANDLE_CLASS}:hover,
+.${DIFF_HANDLE_CLASS}:active {
+  background: var(--jp-brand-color1);
+}
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} .${DIFF_OLD_CLASS} .cm-content {
+  white-space: pre;
+  flex-shrink: 0;
+  max-width: none;
+}
+.${DIFF_OLD_CLASS} .yukti-diff-del {
+  background: color-mix(in srgb, var(--jp-error-color1) 25%, transparent);
+}
+.${DIFF_OLD_CLASS} .yukti-diff-ins {
+  background: color-mix(in srgb, var(--jp-success-color1) 25%, transparent);
+}
+.${DIFF_OLD_CLASS} .cm-editor {
+  border: var(--jp-border-width) solid var(--jp-cell-editor-border-color);
+}
+/* The staged editor follows the live editor's background, active or not. */
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} .${DIFF_OLD_CLASS} :is(.cm-editor, .cm-gutters) {
+  background-color: var(--jp-cell-editor-background);
+}
+.jp-Notebook.jp-mod-editMode .jp-Cell.jp-mod-active.${DIFF_GRID_CLASS}
+  > .${DIFF_OLD_CLASS} :is(.cm-editor, .cm-gutters) {
+  background-color: var(--jp-cell-editor-active-background);
+}
+.${DIFF_CHANGED_CLASS} {
+  box-shadow: inset -4px 0 0 var(--jp-warn-color1);
+}
+.${DIFF_ADDED_CLASS} {
+  box-shadow: inset -4px 0 0 var(--jp-success-color1);
+}
+`;
+
+type StagedCell = { id: string; cell_type: string; source: string };
+
+/**
+ * Pair live cells with staged cells along their longest common subsequence.
+ *
+ * Each row holds a live index, a staged index, or both. A cell that moved
+ * reads as one deletion and one addition.
+ */
+function alignCells(
+  live: string[],
+  old: string[]
+): [number | null, number | null][] {
+  const lcs = live.map(() => new Array<number>(old.length + 1).fill(0));
+  lcs.push(new Array<number>(old.length + 1).fill(0));
+  for (let i = live.length - 1; i >= 0; i--) {
+    for (let j = old.length - 1; j >= 0; j--) {
+      lcs[i][j] = live[i] === old[j]
+        ? lcs[i + 1][j + 1] + 1
+        : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const rows: [number | null, number | null][] = [];
+  let i = 0;
+  let j = 0;
+  while (i < live.length || j < old.length) {
+    if (i < live.length && j < old.length && live[i] === old[j]) {
+      rows.push([i++, j++]);
+    } else if (j < old.length && (i === live.length || lcs[i][j + 1] >= lcs[i + 1][j])) {
+      rows.push([null, j++]);
+    } else {
+      rows.push([i++, null]);
+    }
+  }
+  return rows;
+}
+
+/**
+ * Ask the kernel for the staged copy of this notebook.
+ *
+ * The frontend has no git of its own, and ``user_expressions`` reaches the
+ * kernel without ``%load_ext yukti`` and without an entry in the history.
+ */
+async function fetchStaged(panel: NotebookPanel): Promise<StagedCell[]> {
+  const kernel = panel.sessionContext.session?.kernel;
+  if (kernel == null) {
+    throw new Error('The diff reads git through the kernel. Start a kernel first.');
+  }
+  // Jupyter Notebook 7 sets no ``serverRoot``. Its kernel starts in the
+  // notebook's folder, so the bare name resolves there.
+  const root = PageConfig.getOption('serverRoot');
+  const path = root
+    ? `${root}/${panel.context.path}`
+    : PathExt.basename(panel.context.path);
+  const reply = await kernel.requestExecute({
+    code: '',
+    silent: true,
+    store_history: false,
+    user_expressions: {
+      staged: `__import__('yukti.staged').staged.staged_json(${JSON.stringify(path)})`
+    }
+  }).done;
+  const result = (reply.content as any).user_expressions?.staged;
+  if (result?.status !== 'ok') {
+    throw new Error(`${result?.ename ?? 'Error'}: ${result?.evalue ?? 'no reply'}`);
+  }
+  return result.data['application/json'] as StagedCell[];
+}
+
+type EditorFactory = IEditorServices['factoryService'];
+type Disposable = { dispose(): void };
+
+/** The editors and renderers each painted notebook holds, for ``clearDiff``. */
+type DiffPart = { node: HTMLElement; owned: Disposable[] };
+const diffParts = new WeakMap<Notebook, Map<string, DiffPart[]>>();
+
+/**
+ * Merge staged and live lines into one text, and mark each line's side.
+ *
+ * Kept lines appear once. A removed line is ``del``, an added line ``ins``.
+ */
+function lineDiff(old: string, live: string): { text: string; marks: string[] } {
+  const before = old.split('\n');
+  const after = live.split('\n');
+  const lines: string[] = [];
+  const marks: string[] = [];
+  for (const [i, j] of alignCells(after, before)) {
+    lines.push(i == null ? before[j!] : after[i]);
+    marks.push(i == null ? 'del' : j == null ? 'ins' : '');
+  }
+  return { text: lines.join('\n'), marks };
+}
+
+/** One line decoration per marked line, as a static editor extension. */
+function lineMarks(text: string, marks: string[]) {
+  let from = 0;
+  const ranges = text.split('\n').flatMap((line, n) => {
+    const at = from;
+    from += line.length + 1;
+    return marks[n] ? [Decoration.line({ class: `yukti-diff-${marks[n]}` }).range(at)] : [];
+  });
+  return EditorView.decorations.of(Decoration.set(ranges));
+}
+
+/**
+ * The staged copy of one cell, drawn the way the notebook draws its kind.
+ *
+ * Code gets a read-only editor in the notebook's language, and markdown gets
+ * the notebook's own renderer, untrusted. ``null`` leaves the pane empty.
+ * A changed cell passes its ``live`` source and gets a line diff instead.
+ */
+function oldPane(
+  notebook: Notebook,
+  factory: EditorFactory,
+  old: StagedCell | null,
+  live: string | undefined,
+  owned: Disposable[]
+): HTMLElement {
+  const pane = document.createElement('div');
+  pane.className = DIFF_OLD_CLASS;
+  const handle = document.createElement('div');
+  handle.className = DIFF_HANDLE_CLASS;
+  handle.title = 'Drag to resize the two sides';
+  pane.append(handle);
+  if (old == null) {
+    return pane;
+  }
+  if (old.cell_type === 'markdown' && live == null) {
+    const renderer = notebook.rendermime.createRenderer('text/markdown');
+    void renderer.renderModel({
+      trusted: false,
+      data: { 'text/markdown': old.source },
+      metadata: {},
+      setData: () => undefined
+    });
+    pane.append(renderer.node);
+    owned.push(renderer);
+    return pane;
+  }
+  const diff = live == null ? null : lineDiff(old.source, live);
+  const model = new CodeEditor.Model({
+    mimeType: old.cell_type === 'markdown' ? 'text/x-ipythongfm' : notebook.codeMimetype
+  });
+  model.sharedModel.setSource(diff?.text ?? old.source);
+  const editor = factory.newInlineEditor({
+    host: pane,
+    model,
+    config: { readOnly: true, lineWrap: false }
+  });
+  // ``injectExtension`` belongs to the CodeMirror editor, not the interface.
+  if (diff != null) {
+    (editor as unknown as { injectExtension(ext: unknown): void })
+      .injectExtension(lineMarks(diff.text, diff.marks));
+  }
+  owned.push(editor, model);
+  return pane;
+}
+
+/**
+ * Paint each changed or added cell beside its staged copy.
+ *
+ * An unchanged cell keeps the full width. A deleted cell becomes a row inside
+ * the next live cell, or after the last one, because the windowed notebook
+ * owns the space between cells. The staged pane spans the cell's own rows,
+ * and only the last row grows, so the live input stays at the top.
+ */
+function paintDiff(notebook: Notebook, factory: EditorFactory, old: StagedCell[]): void {
+  // A pane whose content is unchanged is moved, not rebuilt, so a repaint
+  // never empties the panes and the scroll position stays put.
+  const previous = diffParts.get(notebook) ?? new Map<string, DiffPart[]>();
+  const next = new Map<string, DiffPart[]>();
+  const part = (key: string, make: (owned: Disposable[]) => HTMLElement) => {
+    let made = previous.get(key)?.pop();
+    if (made == null) {
+      const owned: Disposable[] = [];
+      made = { node: make(owned), owned };
+    }
+    next.set(key, [...(next.get(key) ?? []), made]);
+    return made.node;
+  };
+  unpaintDiff(notebook);
+  notebook.node.classList.add(DIFF_CLASS);
+  const cells = notebook.widgets;
+  const byId = old.every(cell => cell.id !== '');
+  const key = (cell: Cell) => byId ? cell.model.id : cell.model.sharedModel.getSource();
+  const rows = alignCells(cells.map(key), old.map(cell => byId ? cell.id : cell.source));
+  let gone: HTMLElement[] = [];
+  for (const [i, j] of rows) {
+    if (i == null) {
+      gone.push(part(JSON.stringify(['gone', old[j!]]), owned => {
+        const row = document.createElement('div');
+        row.className = DIFF_GONE_CLASS;
+        row.append(document.createElement('div'));
+        row.append(oldPane(notebook, factory, old[j!], undefined, owned));
+        return row;
+      }));
+      continue;
+    }
+    const cell = cells[i];
+    const added = j == null;
+    const changed = !added && old[j].source !== cell.model.sharedModel.getSource();
+    if (added || changed) {
+      const own = cell.node.childElementCount;
+      cell.addClass(added ? DIFF_ADDED_CLASS : DIFF_CHANGED_CLASS);
+      cell.addClass(DIFF_SPLIT_CLASS);
+      cell.node.style.gridTemplateRows = [
+        ...gone.map(() => 'auto'),
+        ...Array<string>(Math.max(own - 1, 0)).fill('min-content'),
+        '1fr'
+      ].join(' ');
+      const live = cell.model.sharedModel.getSource();
+      const staged = added ? null : old[j];
+      const pane = part(JSON.stringify(['split', staged, live]), owned => (
+        oldPane(notebook, factory, staged, added ? undefined : live, owned)
+      ));
+      pane.style.gridRow = `${gone.length + 1} / -1`;
+      cell.node.append(pane);
+    }
+    if (added || changed || gone.length > 0) {
+      cell.addClass(DIFF_GRID_CLASS);
+    }
+    cell.node.prepend(...gone);
+    gone = [];
+  }
+  const last = cells.at(-1);
+  if (last != null && gone.length > 0) {
+    last.addClass(DIFF_GRID_CLASS);
+    last.node.append(...gone);
+  }
+  disposeParts(previous);
+  diffParts.set(notebook, next);
+}
+
+function disposeParts(parts: Map<string, DiffPart[]>): void {
+  for (const part of [...parts.values()].flat()) {
+    part.owned.forEach(owned => owned.dispose());
+  }
+}
+
+function clearDiff(notebook: Notebook): void {
+  unpaintDiff(notebook);
+  disposeParts(diffParts.get(notebook) ?? new Map());
+  diffParts.delete(notebook);
+}
+
+/** Take the panes and the classes off the cells, and keep the panes alive. */
+function unpaintDiff(notebook: Notebook): void {
+  notebook.node.classList.remove(DIFF_CLASS);
+  notebook.node
+    .querySelectorAll(
+      `.${DIFF_GRID_CLASS} > .${DIFF_OLD_CLASS}, .${DIFF_GRID_CLASS} > .${DIFF_GONE_CLASS}`
+    )
+    .forEach(node => node.remove());
+  for (const cell of notebook.widgets) {
+    for (const cls of [DIFF_GRID_CLASS, DIFF_SPLIT_CLASS, DIFF_CHANGED_CLASS, DIFF_ADDED_CLASS]) {
+      cell.removeClass(cls);
+    }
+    cell.node.style.gridTemplateRows = '';
+  }
+}
+
+/**
+ * Drag any pane's left edge to move the line between the two sides.
+ *
+ * The share lives in one variable on the notebook, so every row moves
+ * together and the share survives a repaint and a second press.
+ */
+function trackDiffResize(notebook: Notebook): void {
+  notebook.node.addEventListener('pointerdown', event => {
+    const handle = (event.target as Element).closest?.(`.${DIFF_HANDLE_CLASS}`);
+    const grid = handle?.closest(`.${DIFF_GRID_CLASS}`);
+    if (handle == null || grid == null) {
+      return;
+    }
+    event.preventDefault();
+    const box = grid.getBoundingClientRect();
+    const move = (moved: PointerEvent) => {
+      const share = (moved.clientX - box.left) / box.width;
+      const clamped = Math.min(Math.max(share, 0.15), 0.85);
+      notebook.node.style.setProperty(DIFF_LEFT_VAR, `${(clamped * 100).toFixed(1)}%`);
+    };
+    const stop = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', stop);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', stop);
+  });
+}
+
+/**
+ * A ``Diff`` toolbar button that sets each cell beside its git-staged copy.
+ *
+ * The live cell stays on the left and runs as before. The staged copy on the
+ * right is read-only, a code editor or rendered markdown. An unchanged cell
+ * keeps the full width. The staged cells are read once per press, and the
+ * colours follow later edits.
+ *
+ * Pro: the reader sees what ``git add`` would add without leaving the notebook.
+ * Con: a cell id that changed, as in a notebook without ids, pairs cells by
+ * source, so an edited cell reads as one deletion and one addition.
+ */
+const diffPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:diff',
+  autoStart: true,
+  requires: [INotebookTracker, IEditorServices],
+  activate: (_app, tracker: INotebookTracker, editors: IEditorServices) => {
+    const factory = editors.factoryService;
+    const style = document.createElement('style');
+    style.textContent = DIFF_STYLE;
+    document.head.appendChild(style);
+    tracker.widgetAdded.connect((_sender, panel: NotebookPanel) => {
+      trackDiffResize(panel.content);
+      let old: StagedCell[] | null = null;
+      let timer = 0;
+      // Outputs, counts and metadata change the model too; only the cell list
+      // and the sources change the diff.
+      let painted = '';
+      const sources = () => JSON.stringify(
+        panel.content.widgets.map(cell => [cell.model.id, cell.model.sharedModel.getSource()])
+      );
+      const repaint = () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          if (old != null && sources() !== painted) {
+            painted = sources();
+            paintDiff(panel.content, factory, old);
+          }
+        }, 300);
+      };
+      const button = new ToolbarButton({
+        label: 'Diff',
+        tooltip: 'Show each cell beside its git-staged copy',
+        onClick: async () => {
+          const model = panel.content.model;
+          if (old != null) {
+            old = null;
+            model?.sharedModel.changed.disconnect(repaint);
+            clearDiff(panel.content);
+          } else {
+            try {
+              old = await fetchStaged(panel);
+            } catch (error) {
+              void showErrorMessage('Yukti diff', String(error));
+              return;
+            }
+            painted = sources();
+            paintDiff(panel.content, factory, old);
+            model?.sharedModel.changed.connect(repaint);
+          }
+          button.pressed = old != null;
+        }
+      });
+      if (!panel.toolbar.insertAfter(MODE_CLASS, DIFF_CLASS, button)) {
+        panel.toolbar.addItem(DIFF_CLASS, button);
+      }
+    });
+  }
+};
+
 export default [
   plugin,
+  diffPlugin,
   aiModePlugin,
   plainTextPlugin,
   skipAskPlugin,
