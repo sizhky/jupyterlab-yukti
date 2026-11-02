@@ -150,9 +150,11 @@ FRONTEND_IN := $(wildcard yukti_frontend/src/*.ts yukti_frontend/schema/*.json) 
 dev: $(STAMPS)/install $(LABEXT) $(STAMPS)/kernel  ## refresh DEVENV with every changed part
 
 # `jupyter labextension build` must come from DEVENV, so the build matches the
-# JupyterLab that serves it.
+# JupyterLab that serves it. `--core-version` pins core-meta to that JupyterLab;
+# without it jupyter_builder 1.2 reads `^4.4.0` as `4.4.x` and cannot resolve it.
 $(LABEXT): $(FRONTEND_IN)
-	PATH="$(DEVBIN):$$PATH" npm run build:prod
+	PATH="$(DEVBIN):$$PATH" npm run build:prod -- \
+		--core-version $$($(DEVBIN)/python -c 'import jupyterlab; print(jupyterlab.__version__)')
 	@touch $@
 	@echo 'dev: frontend rebuilt; reload the JupyterLab browser tab'
 

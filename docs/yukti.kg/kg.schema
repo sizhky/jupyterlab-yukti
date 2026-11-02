@@ -16,6 +16,8 @@ claude:
 	edges=kg.claude.edges
 image:
 	edges=kg.image.edges
+action:
+	edges=kg.action.edges
 palette=kg.palette
 code_source=../../
 
@@ -133,3 +135,19 @@ image:
 		send: Step 4 - one image form for each backend
 			nodes=ask-magic,app-server,claude-code
 			caption="Codex receives the absolute path as a localImage item. Claude Code receives the file bytes as a base64 image block."
+action:
+	source=action
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=ask-magic,tool-payload,frontend
+	sequence_message=message
+	sequence_fragment=fragment
+	sequence_operand=operand
+	sequence_operand_note=operand_note
+	color_by=step
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="Proposed view, pending review: one insert_cells call. tool_payload checks the cells and each optional after_cell_id against the transcript and this turn's inserts, then the frontend inserts each cell after its anchor and tracks it for run_cells and cell_output."

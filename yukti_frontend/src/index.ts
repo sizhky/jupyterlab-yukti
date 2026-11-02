@@ -94,6 +94,9 @@ const ASK_STYLE = tint(ASK_CLASS, 'var(--jp-error-color1)') +
 .${WRAP_CLASS} .cm-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* CodeMirror's own .cm-lineWrapping does the same, so a cell narrower than
+     the ask column wraps at the cell edge instead of scrolling. */
+  flex-shrink: 1;
 }
 .${ASK_CLASS}.${WRAP_CLASS} .cm-content {
   max-width: var(${WIDTH_VAR}, none);
@@ -302,8 +305,8 @@ function serializeCell(cellId: string, cell: ICell): SerializedCell {
  * adopts it, so both sides name the same cell without the frontend answering
  * a comm the kernel cannot read while it is busy with the ``%%ask`` cell.
  *
- * The caller passes the cells below the question, so a run reaches only a cell
- * Yukti inserted, never one the reader wrote above it.
+ * The caller passes only the cells Yukti inserted in this turn, so a run never
+ * reaches a cell the reader wrote, above or below the question.
  */
 function findCell(cells: readonly Cell[], cellId: unknown): Cell | null {
   if (typeof cellId !== 'string') {
@@ -483,6 +486,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
       const requestId = `${cell.model.id}:${Date.now()}`;
       const comm = kernel.createComm(COMM_TARGET);
       let lastInsertedCellId: string | undefined;
+      const insertedCellIds = new Set<string>();
       comm.onMsg = message => {
         const data = message.content.data;
         if (
@@ -506,38 +510,53 @@ const plugin: JupyterFrontEndPlugin<void> = {
             return (
               (cellType === 'code' || cellType === 'markdown') &&
               typeof candidate.source === 'string' &&
-              typeof candidate.cell_id === 'string'
+              typeof candidate.cell_id === 'string' &&
+              ['string', 'undefined'].includes(typeof candidate.after_cell_id)
             ) ? {
-              id: candidate.cell_id,
-              cell_type: cellType,
-              source: candidate.source,
-              metadata: cellType === 'code' ? { trusted: false } : {}
+              after: candidate.after_cell_id as string | undefined,
+              cell: {
+                id: candidate.cell_id,
+                cell_type: cellType,
+                source: candidate.source,
+                metadata: cellType === 'code' ? { trusted: false } : {}
+              }
             } : null;
           });
           if (inserted.length === 0 || inserted.some(cell => cell == null)) {
             return;
           }
-          const previousIndex = notebook.model.sharedModel.cells.findIndex(
-            sharedCell => sharedCell.id === lastInsertedCellId
-          );
-          const insertionIndex = previousIndex < 0
-            ? currentIndex + 1
-            : previousIndex + 1;
-          notebook.model.sharedModel.transact(() => {
-            const newCells = notebook.model!.sharedModel.insertCells(
-              insertionIndex,
-              inserted.map(newCell => newCell!)
-            );
-            lastInsertedCellId = newCells.at(-1)!.id;
+          // An anchor the notebook no longer holds drops the whole call, as
+          // any other malformed cell does.
+          const shared = notebook.model.sharedModel;
+          const anchorIndex = (id: string | undefined) => id == null
+            ? -1
+            : shared.cells.findIndex(sharedCell => sharedCell.id === id);
+          if (inserted.some(item => item!.after != null && anchorIndex(item!.after) < 0)) {
+            return;
+          }
+          // One transaction per cell: ``sharedModel.cells`` updates when a
+          // transaction ends, and the next cell's index is read from it.
+          inserted.forEach(item => {
+            const previousIndex = anchorIndex(item!.after ?? lastInsertedCellId);
+            const insertionIndex = previousIndex < 0
+              ? anchorIndex(cell.model.id) + 1
+              : previousIndex + 1;
+            shared.insertCells(insertionIndex, [item!.cell]);
+            lastInsertedCellId = item!.cell.id;
+            insertedCellIds.add(item!.cell.id);
           });
-          notebook.activeCellIndex = currentIndex + 1;
+          notebook.activeCellIndex = anchorIndex(lastInsertedCellId);
           return;
         }
+        // The cells this turn inserted, wherever they landed, so a run never
+        // reaches a cell of the reader's own.
+        const insertedCells = notebook.widgets.filter(
+          widget => insertedCellIds.has(widget.model.id)
+        );
         if (data.type === 'run_cells' && Array.isArray(data.cells)) {
-          const below = notebook.widgets.slice(currentIndex + 1);
           data.cells.forEach(value => {
             const named = value as Record<string, unknown> | null;
-            const cell = findCell(below, named?.cell_id);
+            const cell = findCell(insertedCells, named?.cell_id);
             if (cell != null) {
               markRunning(cell);
             }
@@ -545,8 +564,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
           return;
         }
         if (data.type === 'cell_output') {
-          const below = notebook.widgets.slice(currentIndex + 1);
-          const cell = findCell(below, data.cell_id);
+          const cell = findCell(insertedCells, data.cell_id);
           if (cell != null) {
             showRun(cell, data.outputs, data.execution_count);
           }
@@ -557,8 +575,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
         }
 
         // Every cell but the question: the cells above it are the transcript
-        // Codex read, and the cells below are the ones it inserted in this
-        // turn, which it rewrites when a run of one of them fails.
+        // Codex read, and the inserted cells, above or below it, are the ones
+        // it rewrites when a run of one of them fails.
         const editable = new Map(
           notebook.widgets
             .filter((_widget, index) => index !== currentIndex)
@@ -806,6 +824,62 @@ const skipAskPlugin: JupyterFrontEndPlugin<void> = {
   activate: () => {
     skipAskOnBulkRun();
     blockFrozenRuns();
+  }
+};
+
+/**
+ * Raise a browser notification when an ``%%ask`` cell finishes while the
+ * reader looks elsewhere, and bring the cell back on a click.
+ *
+ * The first ``%%ask`` run asks for the permission, because a browser grants it
+ * only to a page that asks. A run while the tab has focus stays silent.
+ *
+ * Pro: the browser and the OS own the banner, so it needs no helper app and
+ * follows the reader's Do Not Disturb.
+ * Con: a reader who blocks the permission gets no prompt again; the browser's
+ * site settings are the only way back.
+ */
+const notifyPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:ask-notify',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (app: JupyterFrontEnd, tracker: INotebookTracker) => {
+    if (typeof Notification === 'undefined') {
+      return;
+    }
+    NotebookActions.executionScheduled.connect((_sender, { cell }) => {
+      if (asksCodex(cell) && Notification.permission === 'default') {
+        void Notification.requestPermission();
+      }
+    });
+    NotebookActions.executed.connect((_sender, { cell, notebook, success }) => {
+      const quiet = !document.hidden && document.hasFocus();
+      if (!asksCodex(cell) || quiet || Notification.permission !== 'granted') {
+        return;
+      }
+      const question = cell.model.sharedModel
+        .getSource()
+        .split('\n')
+        .slice(1)
+        .find(line => line.trim() !== '');
+      const banner = new Notification(
+        success ? 'Yukti answered' : 'Yukti stopped with an error',
+        { body: question?.trim() ?? '', tag: cell.model.id }
+      );
+      banner.onclick = () => {
+        window.focus();
+        const panel = tracker.find(candidate => candidate.content === notebook);
+        if (panel != null) {
+          app.shell.activateById(panel.id);
+        }
+        const index = notebook.widgets.indexOf(cell);
+        if (index >= 0) {
+          notebook.activeCellIndex = index;
+          void notebook.scrollToItem(index);
+        }
+        banner.close();
+      };
+    });
   }
 };
 
@@ -1872,6 +1946,7 @@ export default [
   aiModePlugin,
   plainTextPlugin,
   skipAskPlugin,
+  notifyPlugin,
   editOutputPlugin,
   copyPlugin,
   freezePlugin,

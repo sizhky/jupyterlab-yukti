@@ -68,14 +68,18 @@ TOOL_SPECS = [
         "type": "function",
         "name": INSERT_CELLS,
         "description": (
-            "Insert new cells into the user's Jupyter notebook, below the "
-            "cell that asked the question. Send the complete source of each "
-            "cell. Use one call per cell."
+            "Insert new cells into the user's Jupyter notebook. A cell goes "
+            "after the cell its after_cell_id names, a cell_id from the "
+            "transcript or one an insert_cells call returned. Without "
+            "after_cell_id it goes after the cell you inserted last, or below "
+            "the cell that asked the question. Send the complete source of "
+            "each cell. Use one call per cell."
         ),
         "inputSchema": _cells_schema(
             {
                 "cell_type": {"type": "string", "enum": list(CELL_TYPES)},
                 "source": {"type": "string"},
+                "after_cell_id": {"type": "string"},
             },
             ["cell_type", "source"],
         ),
@@ -123,12 +127,13 @@ def tool_specs(run: bool) -> list[dict[str, Any]]:
     return [spec for spec in TOOL_SPECS if run or spec["name"] != RUN_CELLS]
 
 
-def _inserted_cell(cell: Any) -> bool:
+def _inserted_cell(cell: Any, allowed: set) -> bool:
     return (
         isinstance(cell, dict)
-        and set(cell) == {"cell_type", "source"}
+        and set(cell) - {"after_cell_id"} == {"cell_type", "source"}
         and cell.get("cell_type") in CELL_TYPES
         and isinstance(cell.get("source"), str)
+        and cell.get("after_cell_id", "") in allowed | {""}
     )
 
 
@@ -220,6 +225,14 @@ def tool_payload(
     ('insert_cells', '1')
     >>> len(payload["cells"][0]["cell_id"])
     32
+    >>> tool_payload("insert_cells", {"cells": [{"cell_type": "code",
+    ...              "source": "1", "after_cell_id": "a"}]},
+    ...              [{"cell_id": "a"}])["cells"][0]["after_cell_id"]
+    'a'
+    >>> tool_payload("insert_cells", {"cells": [{"cell_type": "code",
+    ...              "source": "1", "after_cell_id": "gone"}]}, [])
+    Traceback (most recent call last):
+    RuntimeError: Yukti received an invalid action: each cell needs a cell_type of code or markdown, a source string, and an optional after_cell_id from the transcript or this turn's inserts
     >>> tool_payload("replace_cells",
     ...              {"cells": [{"cell_id": "a", "source": "1"}]}, [{"cell_id": "a"}])
     {'type': 'replace_cells', 'cells': [{'cell_id': 'a', 'source': '1'}]}
@@ -241,22 +254,24 @@ def tool_payload(
     if tool == RUN_CELLS:
         return {"type": tool, "cells": _run(written, inserted)}
 
+    allowed = {
+        cell["cell_id"]
+        for cell in [*cells, *inserted]
+        if isinstance(cell.get("cell_id"), str)
+    }
+
     if tool == INSERT_CELLS:
-        if not all(_inserted_cell(cell) for cell in written):
+        if not all(_inserted_cell(cell, allowed) for cell in written):
             raise RuntimeError(
                 f"{INVALID}: each cell needs a cell_type of "
-                f"{' or '.join(CELL_TYPES)} and a source string"
+                f"{' or '.join(CELL_TYPES)}, a source string, and an optional "
+                "after_cell_id from the transcript or this turn's inserts"
             )
         return {
             "type": tool,
             "cells": [{**cell, "cell_id": uuid4().hex} for cell in written],
         }
 
-    allowed = {
-        cell["cell_id"]
-        for cell in [*cells, *inserted]
-        if isinstance(cell.get("cell_id"), str)
-    }
     for replacement in written:
         if isinstance(replacement, dict) and replacement.get("cell_id") not in allowed:
             raise RuntimeError(

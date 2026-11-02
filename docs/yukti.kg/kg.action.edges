@@ -1,0 +1,19 @@
+a1: ask-magic -> tool-payload checks
+	step=s1
+	pair=p-payload
+	message=sync
+	note=tool_payload(tool, arguments, cells, inserted)
+	description=change_notebook passes the tool call, the transcript cells and the cells inserted so far in this turn.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[payload = tool_payload(]" context=3}
+a2: tool-payload -> ask-magic returns
+	step=s1
+	pair=p-payload
+	note=cells with cell_id and after_cell_id
+	description=An insert_cells call returns each cell with a new cell_id and the anchor it named. An anchor outside the allowed set raises RuntimeError, and the model can call again.
+	code=[tool_payload](../../yukti/actions.py){show=symbol symbol=tool_payload kind=Function focus="match[_inserted_cell(cell, allowed)] match[uuid4().hex]" context=2}
+a3: ask-magic -> frontend sends
+	step=s2
+	message=async
+	note=insert_cells
+	description=The payload goes over the comm. The frontend inserts each cell after its anchor, or after the cell inserted last, or below %%ask. It drops the call when an anchor is missing from the notebook.
+	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[send(payload)]" context=2}

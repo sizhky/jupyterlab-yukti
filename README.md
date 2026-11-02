@@ -35,7 +35,8 @@ Why did the previous query return these rows?
 
 Yukti chooses how to apply the response. Questions remain rendered answers in the
 `%%ask` cell. Requests for new notebook content add code and markdown cells below
-it. Requests to change earlier cells update those cells.
+it, or after an earlier cell they belong next to. Requests to change earlier cells
+update those cells.
 
 Yukti sends cells above that question through a Jupyter Comm channel. Outputs are
 limited to 8 KB each, and the complete request is limited to 512 KB. Yukti starts
