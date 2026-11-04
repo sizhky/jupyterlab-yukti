@@ -2336,17 +2336,36 @@ function renderedWords(root: HTMLElement) {
 function markWords(oldNode: HTMLElement, liveNode: HTMLElement): void {
   const before = renderedWords(oldNode);
   const after = renderedWords(liveNode);
-  const marks: { word: (typeof before)[number]; cls: string }[] = [];
+  const changed = { del: new Set<number>(), ins: new Set<number>() };
   for (const [i, j] of alignCells(after.map(w => w.text), before.map(w => w.text))) {
-    if (i == null) marks.push({ word: before[j!], cls: 'yukti-word-del' });
-    if (j == null) marks.push({ word: after[i!], cls: 'yukti-word-ins' });
+    if (i == null) changed.del.add(j!);
+    if (j == null) changed.ins.add(i!);
   }
-  // Last first, so a split never moves the offsets of a word still to mark.
-  marks.sort((a, b) => b.word.start - a.word.start);
-  for (const { word, cls } of marks) {
+  // One span per run of changed words in one text node, spaces included, so
+  // a changed phrase reads as one block. A run that goes on in the next node
+  // also takes this node's trailing spaces, and the next its leading ones.
+  const marks: { node: Text; start: number; end: number; cls: string }[] = [];
+  const collect = (words: typeof before, indices: Set<number>, cls: string) => {
+    for (let k = 0; k < words.length; k++) {
+      if (!indices.has(k)) continue;
+      const first = words[k];
+      const cameFrom = indices.has(k - 1);
+      while (indices.has(k + 1) && words[k + 1].node === first.node) k++;
+      const goesOn = indices.has(k + 1);
+      const data = first.node.data;
+      const start = cameFrom && !data.slice(0, first.start).trim() ? 0 : first.start;
+      const end = goesOn && !data.slice(words[k].end).trim() ? data.length : words[k].end;
+      marks.push({ node: first.node, start, end, cls });
+    }
+  };
+  collect(before, changed.del, 'yukti-word-del');
+  collect(after, changed.ins, 'yukti-word-ins');
+  // Last first, so a split never moves the offsets of a run still to mark.
+  marks.sort((a, b) => b.start - a.start);
+  for (const { node, start, end, cls } of marks) {
     const range = document.createRange();
-    range.setStart(word.node, word.start);
-    range.setEnd(word.node, word.end);
+    range.setStart(node, start);
+    range.setEnd(node, end);
     const span = document.createElement('span');
     span.className = cls;
     range.surroundContents(span);
