@@ -466,8 +466,13 @@ const aiModePlugin: JupyterFrontEndPlugin<void> = {
     document.head.appendChild(style);
     tracker.widgetAdded.connect((_sender, panel: NotebookPanel) => {
       const widget = modeWidget(panel);
-      if (!panel.toolbar.insertAfter('cellType', MODE_CLASS, widget)) {
-        panel.toolbar.addItem(MODE_CLASS, widget);
+      // Either plugin may place its items first; both keep AI Mode before Diff.
+      const toolbar = panel.toolbar;
+      if (
+        !toolbar.insertBefore(DIFF_CLASS, MODE_CLASS, widget) &&
+        !toolbar.insertAfter('cellType', MODE_CLASS, widget)
+      ) {
+        toolbar.addItem(MODE_CLASS, widget);
       }
     });
   }
@@ -1978,6 +1983,14 @@ const DIFF_LEFT_VAR = '--yukti-diff-left';
 // Each state is a strip on the cell's right edge, not a border.
 // The staged code never wraps, even inside a cell that wraps its own lines.
 const DIFF_STYLE = `
+[data-jp-item-name="${DIFF_CLASS}"] .lm-mod-toggled {
+  background: var(--jp-brand-color1);
+  border-radius: var(--jp-border-radius);
+}
+[data-jp-item-name="${DIFF_CLASS}"] .lm-mod-toggled .jp-ToolbarButtonComponent-label {
+  color: var(--jp-ui-inverse-font-color0);
+  font-weight: 600;
+}
 .${DIFF_CLASS} .${DIFF_GRID_CLASS} {
   display: grid;
   grid-template-columns: minmax(0, var(${DIFF_LEFT_VAR}, 50%)) minmax(0, 1fr);
@@ -2778,7 +2791,10 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
       const baseNode = document.createElement('div');
       baseNode.className = MODE_CLASS;
       baseNode.append(base);
-      if (!panel.toolbar.insertAfter(MODE_CLASS, DIFF_CLASS, button)) {
+      if (
+        !panel.toolbar.insertAfter(MODE_CLASS, DIFF_CLASS, button) &&
+        !panel.toolbar.insertAfter('cellType', DIFF_CLASS, button)
+      ) {
         panel.toolbar.addItem(DIFF_CLASS, button);
       }
       panel.toolbar.insertAfter(DIFF_CLASS, `${DIFF_CLASS}-base`, new Widget({ node: baseNode }));
