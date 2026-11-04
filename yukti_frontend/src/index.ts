@@ -2462,6 +2462,12 @@ const FOOTER_STYLE = `
 /* The footer wraps to its own row under the editor, as wide as the editor,
    and its missing top border is the editor's bottom border. */
 .jp-InputArea:has(> .${FOOTER_CLASS}:not(:empty)) { flex-wrap: wrap; }
+/* Wrapping reads each item's flex-basis, and an editor's default basis is its
+   longest line, so a long line would push the editor under the prompt. */
+.jp-InputArea:has(> .${FOOTER_CLASS}:not(:empty)) > .jp-InputArea-editor {
+  flex: 1 1 0;
+  min-width: 0;
+}
 .${FOOTER_CLASS} {
   flex: 0 0 calc(100% - var(--jp-cell-prompt-width, 64px));
   margin-left: auto;
