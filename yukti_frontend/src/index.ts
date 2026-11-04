@@ -37,6 +37,11 @@ import { IDefaultFileBrowser } from '@jupyterlab/filebrowser';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 import { Widget } from '@lumino/widgets';
 import { Decoration, EditorView } from '@codemirror/view';
+import { highlightingFor } from '@codemirror/language';
+import type { Language } from '@codemirror/language';
+import { IEditorLanguageRegistry } from '@jupyterlab/codemirror';
+import { highlightTree } from '@lezer/highlight';
+import type { Tag } from '@lezer/highlight';
 
 const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
@@ -2137,6 +2142,63 @@ function lineMarks(text: string, marks: string[]) {
 }
 
 /**
+ * Each line's highlight spans, as ``[from, to, classes]`` within the line.
+ *
+ * >>> lineSpans('a = "x"\nb', python, view)  // [[[0, 1, 'var'], ...], [[0, 1, 'var']]]
+ */
+function lineSpans(source: string, lang: Language, view: EditorView) {
+  const highlighter = { style: (tags: readonly Tag[]) => highlightingFor(view.state, tags) };
+  const starts = [0];
+  for (let at = source.indexOf('\n'); at >= 0; at = source.indexOf('\n', at + 1)) {
+    starts.push(at + 1);
+  }
+  const lines: [number, number, string][][] = starts.map(() => []);
+  let n = 0;
+  highlightTree(lang.parser.parse(source), highlighter, (from, to, classes) => {
+    while (n + 1 < starts.length && starts[n + 1] <= from) n++;
+    for (let k = n; k < starts.length && starts[k] < to; k++) {
+      const end = k + 1 < starts.length ? starts[k + 1] - 1 : source.length;
+      const a = Math.max(from, starts[k]);
+      const b = Math.min(to, end);
+      if (a < b) lines[k].push([a - starts[k], b - starts[k], classes]);
+    }
+  });
+  return lines;
+}
+
+/**
+ * Colour each merged line by parsing the side it came from.
+ *
+ * The merged text is not valid code, so one parse of it misreads strings and
+ * blocks that span a change. Each side parses alone; a kept line takes the
+ * live side's colours.
+ */
+function sideColours(
+  view: EditorView,
+  lang: Language,
+  old: string,
+  live: string,
+  diff: { text: string; marks: string[] }
+) {
+  const before = lineSpans(old, lang, view);
+  const after = lineSpans(live, lang, view);
+  let i = 0;
+  let j = 0;
+  let at = 0;
+  const ranges = diff.text.split('\n').flatMap((line, n) => {
+    const mark = diff.marks[n];
+    const spans = mark === 'del' ? before[j++] : after[i++];
+    if (mark === '') j++;
+    const start = at;
+    at += line.length + 1;
+    return spans.map(([a, b, classes]) =>
+      Decoration.mark({ class: classes }).range(start + a, start + b)
+    );
+  });
+  return EditorView.decorations.of(Decoration.set(ranges, true));
+}
+
+/**
  * Split a markdown line diff into blocks a renderer can draw one at a time.
  *
  * Blank lines outside code fences end a block. An unchanged block renders
@@ -2183,7 +2245,8 @@ function oldPane(
   factory: EditorFactory,
   old: StagedCell | null,
   live: string | undefined,
-  owned: Disposable[]
+  owned: Disposable[],
+  lang: Language | null
 ): HTMLElement {
   const pane = document.createElement('div');
   pane.className = DIFF_OLD_CLASS;
@@ -2215,7 +2278,9 @@ function oldPane(
     return pane;
   }
   const diff = live == null ? null : lineDiff(old.source, live);
-  const model = new CodeEditor.Model({ mimeType: notebook.codeMimetype });
+  // With a language at hand, the sides colour themselves; see ``sideColours``.
+  const own = diff == null || lang == null;
+  const model = new CodeEditor.Model({ mimeType: own ? notebook.codeMimetype : 'text/plain' });
   model.sharedModel.setSource(diff?.text ?? old.source);
   const editor = factory.newInlineEditor({
     host: pane,
@@ -2224,8 +2289,11 @@ function oldPane(
   });
   // ``injectExtension`` belongs to the CodeMirror editor, not the interface.
   if (diff != null) {
-    (editor as unknown as { injectExtension(ext: unknown): void })
-      .injectExtension(lineMarks(diff.text, diff.marks));
+    const cm = editor as unknown as { editor: EditorView; injectExtension(ext: unknown): void };
+    cm.injectExtension(lineMarks(diff.text, diff.marks));
+    if (lang != null) {
+      cm.injectExtension(sideColours(cm.editor, lang, old.source, live!, diff));
+    }
   }
   owned.push(editor, model);
   return pane;
@@ -2239,7 +2307,12 @@ function oldPane(
  * owns the space between cells. The staged pane spans the cell's own rows,
  * and only the last row grows, so the live input stays at the top.
  */
-function paintDiff(notebook: Notebook, factory: EditorFactory, old: StagedCell[]): void {
+function paintDiff(
+  notebook: Notebook,
+  factory: EditorFactory,
+  old: StagedCell[],
+  lang: Language | null
+): void {
   // A pane whose content is unchanged is moved, not rebuilt, so a repaint
   // never empties the panes and the scroll position stays put.
   const previous = diffParts.get(notebook) ?? new Map<string, DiffPart[]>();
@@ -2266,7 +2339,7 @@ function paintDiff(notebook: Notebook, factory: EditorFactory, old: StagedCell[]
         const row = document.createElement('div');
         row.className = DIFF_GONE_CLASS;
         row.append(document.createElement('div'));
-        row.append(oldPane(notebook, factory, old[j!], undefined, owned));
+        row.append(oldPane(notebook, factory, old[j!], undefined, owned, lang));
         return row;
       }));
       continue;
@@ -2286,7 +2359,7 @@ function paintDiff(notebook: Notebook, factory: EditorFactory, old: StagedCell[]
       const live = cell.model.sharedModel.getSource();
       const staged = added ? null : old[j];
       const pane = part(JSON.stringify(['split', staged, live]), owned => (
-        oldPane(notebook, factory, staged, added ? undefined : live, owned)
+        oldPane(notebook, factory, staged, added ? undefined : live, owned, lang)
       ));
       pane.style.gridRow = `${gone.length + 1} / -1`;
       cell.node.append(pane);
@@ -2378,8 +2451,13 @@ function trackDiffResize(notebook: Notebook): void {
 const diffPlugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:diff',
   autoStart: true,
-  requires: [INotebookTracker, IEditorServices],
-  activate: (_app, tracker: INotebookTracker, editors: IEditorServices) => {
+  requires: [INotebookTracker, IEditorServices, IEditorLanguageRegistry],
+  activate: (
+    _app,
+    tracker: INotebookTracker,
+    editors: IEditorServices,
+    languages: IEditorLanguageRegistry
+  ) => {
     const factory = editors.factoryService;
     const style = document.createElement('style');
     style.textContent = DIFF_STYLE;
@@ -2387,6 +2465,7 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
     tracker.widgetAdded.connect((_sender, panel: NotebookPanel) => {
       trackDiffResize(panel.content);
       let old: StagedCell[] | null = null;
+      let lang: Language | null = null;
       let timer = 0;
       // Outputs, counts and metadata change the model too; only the cell list
       // and the sources change the diff.
@@ -2399,7 +2478,7 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
         timer = window.setTimeout(() => {
           if (old != null && sources() !== painted) {
             painted = sources();
-            paintDiff(panel.content, factory, old);
+            paintDiff(panel.content, factory, old, lang);
           }
         }, 300);
       };
@@ -2416,12 +2495,14 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
       const show = async () => {
         try {
           old = await fetchStaged(panel, base.value);
+          const found = languages.findByMIME(panel.content.codeMimetype);
+          lang = found ? (await languages.getLanguage(found))?.support?.language ?? null : null;
         } catch (error) {
           void showErrorMessage('Yukti diff', String(error));
           return;
         }
         painted = sources();
-        paintDiff(panel.content, factory, old);
+        paintDiff(panel.content, factory, old, lang);
       };
       const button = new ToolbarButton({
         label: 'Diff',
