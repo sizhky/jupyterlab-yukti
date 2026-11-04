@@ -1,5 +1,9 @@
 import type { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/application';
-import { Clipboard, showErrorMessage } from '@jupyterlab/apputils';
+import {
+  Clipboard,
+  Notification as JupyterNotification,
+  showErrorMessage
+} from '@jupyterlab/apputils';
 import { CodeCell } from '@jupyterlab/cells';
 import type { Cell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
 import {
@@ -2041,11 +2045,31 @@ const DIFF_STYLE = `
 
 type StagedCell = { id: string; cell_type: string; source: string };
 
-/** The git copies the diff can compare against; ``''`` is the index. */
+/** The diff base that reads the file on disk instead of a git copy. */
+const DISK = 'disk';
+
+/** The copies the diff can compare against; ``''`` is the git index. */
 const DIFF_BASES = [
   { value: '', label: 'Staged' },
-  { value: 'HEAD', label: 'Last commit' }
+  { value: 'HEAD', label: 'Last commit' },
+  { value: DISK, label: 'Saved file' }
 ];
+
+/**
+ * The cells of the notebook file as the server holds it now, which is newer
+ * than this tab when another program wrote the file.
+ */
+async function diskCells(contents: Contents, path: string): Promise<StagedCell[]> {
+  const file = await contents.get(path, { content: true, type: 'notebook' });
+  return ((file.content?.cells ?? []) as any[]).map(cell => ({
+    id: String(cell.id ?? ''),
+    cell_type: String(cell.cell_type ?? ''),
+    source: Array.isArray(cell.source) ? cell.source.join('') : String(cell.source ?? '')
+  }));
+}
+
+/** Each notebook's diff, opened against one base, for the disk watcher. */
+const openDiff = new WeakMap<NotebookPanel, (base: string) => Promise<void>>();
 
 /**
  * Pair live cells with staged cells along their longest common subsequence.
@@ -2593,7 +2617,7 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
   autoStart: true,
   requires: [INotebookTracker, IEditorServices, IEditorLanguageRegistry],
   activate: (
-    _app,
+    app: JupyterFrontEnd,
     tracker: INotebookTracker,
     editors: IEditorServices,
     languages: IEditorLanguageRegistry
@@ -2624,7 +2648,7 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
       };
       const base = document.createElement('select');
       base.className = 'jp-mod-styled';
-      base.title = 'The git copy the diff compares against';
+      base.title = 'The copy the diff compares against';
       base.setAttribute('aria-label', 'Diff against');
       for (const choice of DIFF_BASES) {
         const option = document.createElement('option');
@@ -2634,7 +2658,9 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
       }
       const show = async () => {
         try {
-          old = await fetchStaged(panel, base.value);
+          old = base.value === DISK
+            ? await diskCells(app.serviceManager.contents, panel.context.path)
+            : await fetchStaged(panel, base.value);
           const found = languages.findByMIME(panel.content.codeMimetype);
           lang = found ? (await languages.getLanguage(found))?.support?.language ?? null : null;
         } catch (error) {
@@ -2644,23 +2670,28 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
         painted = sources();
         paintDiff(panel.content, factory, old, lang);
       };
+      const toggle = async () => {
+        const model = panel.content.model;
+        if (old != null) {
+          old = null;
+          model?.sharedModel.changed.disconnect(repaint);
+          clearDiff(panel.content);
+        } else {
+          await show();
+          if (old != null) {
+            model?.sharedModel.changed.connect(repaint);
+          }
+        }
+        button.pressed = old != null;
+      };
       const button = new ToolbarButton({
         label: 'Diff',
-        tooltip: 'Show each cell beside its git copy',
-        onClick: async () => {
-          const model = panel.content.model;
-          if (old != null) {
-            old = null;
-            model?.sharedModel.changed.disconnect(repaint);
-            clearDiff(panel.content);
-          } else {
-            await show();
-            if (old != null) {
-              model?.sharedModel.changed.connect(repaint);
-            }
-          }
-          button.pressed = old != null;
-        }
+        tooltip: 'Show each cell beside its saved or git copy',
+        onClick: toggle
+      });
+      openDiff.set(panel, async choice => {
+        base.value = choice;
+        await (old != null ? show() : toggle());
       });
       // A new base while the diff is on repaints against that copy.
       base.addEventListener('change', () => {
@@ -2679,8 +2710,95 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
+const WATCH_MS = 2000;
+
+/**
+ * Notice when another program rewrites an open notebook's file.
+ *
+ * A tab with no unsaved edits reloads at once. A tab with unsaved edits keeps
+ * them and shows a warning that offers Reload, Diff against the saved file,
+ * and Keep mine, so the next save never overwrites the newer file unseen.
+ *
+ * Pro: the check reads only the file's ``last_modified``, never its content.
+ * Con: a change lands in the tab up to ``WATCH_MS`` late, or on window focus.
+ */
+const diskWatchPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:disk-watch',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (app: JupyterFrontEnd, tracker: INotebookTracker) => {
+    const contents = app.serviceManager.contents;
+    // The disk time each tab already acted on, so one change warns once.
+    const handled = new WeakMap<NotebookPanel, string>();
+    const warnings = new WeakMap<NotebookPanel, string>();
+    const saving = new WeakSet<NotebookPanel>();
+    const check = async (panel: NotebookPanel) => {
+      const context = panel.context;
+      if (panel.isDisposed || !context.isReady || saving.has(panel)) return;
+      let disk: string;
+      try {
+        disk = (await contents.get(context.path, { content: false })).last_modified;
+      } catch {
+        return;
+      }
+      // Read after the wait: a save that ended meanwhile moved this time.
+      const known = context.contentsModel?.last_modified;
+      if (
+        known == null || saving.has(panel) || handled.get(panel) === disk ||
+        Date.parse(disk) <= Date.parse(known)
+      ) {
+        return;
+      }
+      handled.set(panel, disk);
+      const name = PathExt.basename(context.path);
+      if (!context.model.dirty) {
+        await context.revert();
+        JupyterNotification.info(`Reloaded ${name}: it changed on disk`, { autoClose: 3000 });
+        return;
+      }
+      const previous = warnings.get(panel);
+      if (previous) JupyterNotification.dismiss(previous);
+      warnings.set(panel, JupyterNotification.warning(
+        `${name} changed on disk, and this tab has unsaved edits`,
+        {
+          autoClose: false,
+          actions: [
+            { label: 'Reload', displayType: 'warn', callback: () => void context.revert() },
+            {
+              label: 'Diff',
+              callback: event => {
+                event.preventDefault();
+                void openDiff.get(panel)?.(DISK);
+              }
+            },
+            { label: 'Keep mine', callback: () => undefined }
+          ]
+        }
+      ));
+    };
+    const checkAll = () => {
+      if (!document.hidden) tracker.forEach(panel => void check(panel));
+    };
+    window.setInterval(checkAll, WATCH_MS);
+    window.addEventListener('focus', checkAll);
+    tracker.widgetAdded.connect((_sender, panel) => {
+      panel.context.saveState.connect((_context, state) => {
+        if (state === 'started') saving.add(panel);
+        else saving.delete(panel);
+      });
+      // A save or a reload makes this tab the newest copy again.
+      panel.context.fileChanged.connect(() => {
+        const id = warnings.get(panel);
+        if (id) JupyterNotification.dismiss(id);
+        warnings.delete(panel);
+      });
+    });
+  }
+};
+
 export default [
   plugin,
+  diskWatchPlugin,
   footerPlugin,
   diffPlugin,
   aiModePlugin,
