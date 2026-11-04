@@ -1983,11 +1983,14 @@ const DIFF_LEFT_VAR = '--yukti-diff-left';
 // Each state is a strip on the cell's right edge, not a border.
 // The staged code never wraps, even inside a cell that wraps its own lines.
 const DIFF_STYLE = `
-[data-jp-item-name="${DIFF_CLASS}"] .lm-mod-toggled {
-  background: var(--jp-brand-color1);
+[data-jp-item-name="${DIFF_CLASS}"] .jp-ToolbarButtonComponent {
+  padding: 2px 12px;
   border-radius: var(--jp-border-radius);
 }
-[data-jp-item-name="${DIFF_CLASS}"] .lm-mod-toggled .jp-ToolbarButtonComponent-label {
+[data-jp-item-name="${DIFF_CLASS}"] [aria-pressed="true"] {
+  background: var(--jp-brand-color1);
+}
+[data-jp-item-name="${DIFF_CLASS}"] [aria-pressed="true"] .jp-ToolbarButtonComponent-label {
   color: var(--jp-ui-inverse-font-color0);
   font-weight: 600;
 }
