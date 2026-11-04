@@ -2027,6 +2027,21 @@ const DIFF_STYLE = `
 .${DIFF_OLD_CLASS} .cm-editor {
   border: var(--jp-border-width) solid var(--jp-cell-editor-border-color);
 }
+/* A block with word marks fades, so the changed words carry the colour. */
+.${DIFF_OLD_CLASS} .yukti-diff-words.yukti-diff-del {
+  background: color-mix(in srgb, var(--jp-error-color1) 8%, transparent);
+}
+.${DIFF_OLD_CLASS} .yukti-diff-words.yukti-diff-ins {
+  background: color-mix(in srgb, var(--jp-success-color1) 8%, transparent);
+}
+.${DIFF_OLD_CLASS} .yukti-word-del {
+  background: color-mix(in srgb, var(--jp-error-color1) 45%, transparent);
+  border-radius: 2px;
+}
+.${DIFF_OLD_CLASS} .yukti-word-ins {
+  background: color-mix(in srgb, var(--jp-success-color1) 45%, transparent);
+  border-radius: 2px;
+}
 /* The staged editor follows the live editor's background, active or not. */
 .${DIFF_CLASS} .${DIFF_GRID_CLASS} .${DIFF_OLD_CLASS} :is(.cm-editor, .cm-gutters) {
   background-color: var(--jp-cell-editor-background);
@@ -2271,6 +2286,54 @@ function markdownBlocks(diff: { text: string; marks: string[] }) {
  * the notebook's own renderer, untrusted. ``null`` leaves the pane empty.
  * A changed cell passes its ``live`` source and gets a line diff instead.
  */
+/**
+ * The words of a rendered node, each with the text node and offsets it sits at.
+ *
+ * Text that holds ``$`` is skipped, because MathJax replaces math text after
+ * the render and would drop or garble a mark inside it.
+ */
+function renderedWords(root: HTMLElement) {
+  const words: { node: Text; start: number; end: number; text: string }[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    if (node.data.includes('$') || node.parentElement?.closest('mjx-container, .MathJax')) {
+      continue;
+    }
+    for (const match of node.data.matchAll(/\S+/g)) {
+      words.push({ node, start: match.index!, end: match.index! + match[0].length, text: match[0] });
+    }
+  }
+  return words;
+}
+
+/**
+ * Highlight the words that differ between a staged block and its live block.
+ *
+ * The diff runs on rendered text, so inline code and links keep their markup.
+ * Pairing reuses ``alignCells``, the longest common subsequence of the cells.
+ */
+function markWords(oldNode: HTMLElement, liveNode: HTMLElement): void {
+  const before = renderedWords(oldNode);
+  const after = renderedWords(liveNode);
+  const marks: { word: (typeof before)[number]; cls: string }[] = [];
+  for (const [i, j] of alignCells(after.map(w => w.text), before.map(w => w.text))) {
+    if (i == null) marks.push({ word: before[j!], cls: 'yukti-word-del' });
+    if (j == null) marks.push({ word: after[i!], cls: 'yukti-word-ins' });
+  }
+  // Last first, so a split never moves the offsets of a word still to mark.
+  marks.sort((a, b) => b.word.start - a.word.start);
+  for (const { word, cls } of marks) {
+    const range = document.createRange();
+    range.setStart(word.node, word.start);
+    range.setEnd(word.node, word.end);
+    const span = document.createElement('span');
+    span.className = cls;
+    range.surroundContents(span);
+  }
+  oldNode.classList.add('yukti-diff-words');
+  liveNode.classList.add('yukti-diff-words');
+}
+
 function oldPane(
   notebook: Notebook,
   factory: EditorFactory,
@@ -2292,9 +2355,9 @@ function oldPane(
     const blocks = live == null
       ? [{ source: old.source, mark: '' }]
       : markdownBlocks(lineDiff(old.source, live));
-    for (const block of blocks) {
+    const drawn = blocks.map(block => {
       const renderer = notebook.rendermime.createRenderer('text/markdown');
-      void renderer.renderModel({
+      const done = renderer.renderModel({
         trusted: false,
         data: { 'text/markdown': block.source },
         metadata: {},
@@ -2305,7 +2368,15 @@ function oldPane(
       }
       pane.append(renderer.node);
       owned.push(renderer);
-    }
+      return { node: renderer.node, mark: block.mark, done };
+    });
+    // ``markdownBlocks`` emits a changed block as its staged form, then its live form.
+    drawn.forEach((block, n) => {
+      const next = drawn[n + 1];
+      if (block.mark === 'del' && next?.mark === 'ins') {
+        void Promise.all([block.done, next.done]).then(() => markWords(block.node, next.node));
+      }
+    });
     return pane;
   }
   const diff = live == null ? null : lineDiff(old.source, live);
