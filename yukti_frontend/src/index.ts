@@ -2013,8 +2013,13 @@ const DIFF_STYLE = `
 .${DIFF_HANDLE_CLASS}:active {
   background: var(--jp-brand-color1);
 }
-.${DIFF_CLASS} .${DIFF_GRID_CLASS} .${DIFF_OLD_CLASS} .cm-content {
+/* While the diff is on, the live cells scroll sideways like the staged copy,
+   even where a cell's own wrap is on. The extra .jp-Notebook outranks the
+   ask-cell wrap rule, whose stylesheet may load after this one. */
+.${DIFF_CLASS} .${DIFF_GRID_CLASS} .${DIFF_OLD_CLASS} .cm-content,
+.jp-Notebook.${DIFF_CLASS} .${WRAP_CLASS} .cm-content {
   white-space: pre;
+  overflow-wrap: normal;
   flex-shrink: 0;
   max-width: none;
 }
