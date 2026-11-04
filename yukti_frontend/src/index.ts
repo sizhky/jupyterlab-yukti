@@ -480,6 +480,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
         return;
       }
 
+      // A rerun shows no usage until its own turn reports one.
+      cell.model.deleteMetadata(USAGE_KEY);
       const index = notebook.widgets.indexOf(cell);
       const panel = tracker.find(candidate => candidate.content === notebook);
       const kernel = panel?.sessionContext.session?.kernel;
@@ -509,6 +511,11 @@ const plugin: JupyterFrontEndPlugin<void> = {
 
         const currentIndex = notebook.widgets.indexOf(cell);
         if (currentIndex < 0) {
+          return;
+        }
+        if (data.type === 'usage') {
+          const { type: _type, request_id: _id, ...usage } = data;
+          cell.model.setMetadata(USAGE_KEY, usage);
           return;
         }
         if (data.type === 'insert_cells' && Array.isArray(data.cells)) {
@@ -2448,6 +2455,133 @@ function trackDiffResize(notebook: Notebook): void {
  * Con: a cell id that changed, as in a notebook without ids, pairs cells by
  * source, so an edited cell reads as one deletion and one addition.
  */
+/** The turn usage ``%%ask`` sends; see ``yukti/usage.py`` for the fields. */
+const USAGE_KEY = 'yukti_usage';
+const FOOTER_CLASS = 'yukti-footer';
+const FOOTER_STYLE = `
+/* The footer wraps to its own row under the editor, as wide as the editor,
+   and its missing top border is the editor's bottom border. */
+.jp-InputArea:has(> .${FOOTER_CLASS}:not(:empty)) { flex-wrap: wrap; }
+.${FOOTER_CLASS} {
+  flex: 0 0 calc(100% - var(--jp-cell-prompt-width, 64px));
+  margin-left: auto;
+  box-sizing: border-box;
+  border: var(--jp-border-width, 1px) solid var(--jp-cell-editor-border-color);
+  border-top: none;
+  padding: 2px var(--jp-cell-padding, 5px);
+  color: var(--jp-ui-font-color2);
+  font-size: var(--jp-ui-font-size0);
+}
+.${FOOTER_CLASS}:empty { display: none; }
+`;
+
+/**
+ * ``450ms``, ``18.2s``, ``3m 5s``, ``1h 2m``.
+ */
+function duration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/** ``820``, ``12.4k``, ``1.25M``. */
+function tokens(count: number): string {
+  if (count < 1000) return `${count}`;
+  if (count < 1e6) return `${(count / 1e3).toFixed(1)}k`;
+  return `${(count / 1e6).toFixed(2)}M`;
+}
+
+/**
+ * The footer of one code cell as ``[text, tooltip line]`` pairs, or none while
+ * it runs or before it ran.
+ *
+ * ``3.4s · ⚡1.8s · ↑21.2k (88% cached) · ↓50 · $0.024``
+ *
+ * The run time comes from the ``execution`` timestamps JupyterLab writes when
+ * the Notebook setting ``recordTiming`` is on; an older reply than the start
+ * means the cell is running again.
+ */
+function footerParts(model: ICellModel): [string, string][] {
+  const timing = (model.getMetadata('execution') ?? {}) as Record<string, string>;
+  const started = Date.parse(timing['shell.execute_reply.started'] ?? timing['iopub.status.busy']);
+  const done = Date.parse(timing['shell.execute_reply']);
+  const parts: [string, string][] = [];
+  if (done >= started) {
+    const ran = duration(done - started);
+    parts.push([ran, `executed in ${ran}`]);
+  }
+  const usage = model.getMetadata(USAGE_KEY) as Record<string, number | null> | undefined;
+  if (usage != null) {
+    const input = usage.input ?? 0;
+    const cached = usage.cached ?? 0;
+    const share = input ? Math.round((cached / input) * 100) : 0;
+    if (usage.first_ms != null) {
+      const first = duration(usage.first_ms);
+      parts.push([`⚡${first}`, `first token in ${first}`]);
+    }
+    parts.push(
+      [`↑${tokens(input)} (${share}% cached)`, `${tokens(input)} input tokens, ${tokens(cached)} from cache`],
+      [`↓${tokens(usage.output ?? 0)}`, `${tokens(usage.output ?? 0)} output tokens`]
+    );
+    if (usage.cost_usd != null) {
+      const cost = `$${usage.cost_usd.toFixed(usage.cost_usd < 0.01 ? 4 : 3)}`;
+      parts.push([cost, `${cost} at API prices; the subscription is not charged it`]);
+    }
+  }
+  return parts;
+}
+
+/**
+ * A small line under each code cell: its run time, and for ``%%ask`` the
+ * tokens, the first-token time, and the cost at API prices.
+ *
+ * Pro: JupyterLab already records run timestamps, so no timer runs here.
+ * Con: without ``recordTiming`` only the ``%%ask`` usage shows.
+ */
+const footerPlugin: JupyterFrontEndPlugin<void> = {
+  id: 'yukti:cell-footer',
+  autoStart: true,
+  requires: [INotebookTracker],
+  activate: (_app, tracker: INotebookTracker) => {
+    const style = document.createElement('style');
+    style.textContent = FOOTER_STYLE;
+    document.head.appendChild(style);
+    tracker.widgetAdded.connect((_sender, panel: NotebookPanel) => {
+      const paintCell = (cell: Cell) => {
+        const area = cell.inputArea?.node;
+        if (cell.model.type !== 'code' || area == null) return;
+        let footer = area.querySelector<HTMLElement>(`:scope > .${FOOTER_CLASS}`);
+        if (footer == null) {
+          footer = document.createElement('div');
+          footer.className = FOOTER_CLASS;
+          area.append(footer);
+        }
+        const parts = footerParts(cell.model);
+        footer.textContent = parts.map(part => part[0]).join(' · ');
+        footer.title = parts.map(part => part[1]).join('\n');
+      };
+      const paint = () => panel.content.widgets.forEach(paintCell);
+      // A windowed notebook builds a cell's input area only when the cell
+      // first scrolls into view, which is after the load-time paint.
+      panel.content.cellInViewportChanged.connect((_, cell) => paintCell(cell));
+      void panel.context.ready.then(() => {
+        const model = panel.content.model;
+        if (panel.isDisposed || model == null) return;
+        const watch = (cell: ICellModel) => cell.metadataChanged.connect(paint);
+        for (const cell of model.cells) watch(cell);
+        model.cells.changed.connect((_, change) => {
+          if (change.type === 'add' || change.type === 'set') change.newValues.forEach(watch);
+          paint();
+        });
+        paint();
+      });
+    });
+  }
+};
+
 const diffPlugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:diff',
   autoStart: true,
@@ -2541,6 +2675,7 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
 
 export default [
   plugin,
+  footerPlugin,
   diffPlugin,
   aiModePlugin,
   plainTextPlugin,

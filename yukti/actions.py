@@ -41,6 +41,10 @@ VERBS = {INSERT_CELLS: "insert", REPLACE_CELLS: "replace", RUN_CELLS: "run"}
 # they land in the cell that holds the source instead of in the %%ask cell.
 CELL_OUTPUT = "cell_output"
 
+# Not a tool: the turn's tokens, API cost and first-token time, which the
+# notebook keeps in the %%ask cell's metadata for its footer.
+USAGE = "usage"
+
 
 def _cells_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     """The one-key argument object every tool takes."""

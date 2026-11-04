@@ -36,6 +36,7 @@ def test_the_answer_renders_when_the_turn_never_streamed():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
     server.run.return_value = "Use `functools.cache`."
 
     with patch("yukti.ask.AppServer", return_value=server), patch(
@@ -66,6 +67,7 @@ def test_ask_sends_each_tool_call_to_the_notebook():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
 
     def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         on_delta("The slow one first.")
@@ -97,6 +99,7 @@ def test_a_run_reports_the_output_to_the_model_and_to_the_notebook():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
     printed = [{"output_type": "stream", "name": "stdout", "text": "55\n"}]
 
     def run(_transcript, images, on_delta, on_event, on_tool, on_action):
@@ -143,6 +146,7 @@ def test_a_rewritten_cell_runs_the_source_the_notebook_now_holds():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
 
     def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         inserted = on_action(
@@ -170,6 +174,7 @@ def test_a_run_of_a_cell_no_insert_returned_is_refused():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
 
     def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         with pytest.raises(RuntimeError, match="ghost"):
@@ -190,6 +195,7 @@ def test_a_refused_tool_call_never_reaches_the_notebook():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
 
     def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         with pytest.raises(RuntimeError, match="gone"):
@@ -223,6 +229,7 @@ def test_a_pasted_image_reaches_the_model_as_an_absolute_path(tmp_path, monkeypa
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
     server.run.return_value = "A chart."
 
     with patch("yukti.ask.AppServer", return_value=server), patch("yukti.ask.display"):
@@ -236,6 +243,7 @@ def test_debug_stops_before_the_model_turn():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
     server.debug_details.return_value = {"command": ["codex"]}
 
     with patch("yukti.ask.AppServer", return_value=server), patch("yukti.ask.display"):
@@ -252,6 +260,7 @@ def test_each_message_block_renders_into_its_own_output():
     magic = build_magic(comm)
     server = MagicMock()
     server.__enter__.return_value = server
+    server.usage = None
 
     def run(_transcript, images, on_delta, on_event, on_tool, on_action):
         on_delta("Naive recursion.")
@@ -292,3 +301,25 @@ def test_ask_does_nothing_without_a_kernel():
     magic.shell.kernel = None
     assert magic.ask("", "What is this?") is None
     magic.prefixes.take.assert_not_called()
+
+
+def test_ask_sends_the_turn_usage_last():
+    """The notebook keeps the turn's tokens and cost for the cell footer."""
+    comm = MagicMock()
+    magic = build_magic(comm)
+    server = MagicMock()
+    server.__enter__.return_value = server
+    server.usage = {"input": 10, "cached": 4, "output": 2, "cost_usd": 0.01}
+
+    def run(*_args, on_delta, **_kwargs):
+        on_delta("Hi.")
+        return "Hi."
+
+    server.run.side_effect = run
+    with patch("yukti.ask.AppServer", return_value=server), patch("yukti.ask.display"):
+        magic.ask("", "hello?")
+
+    last = sent(comm)[-1]
+    assert last["type"] == "usage"
+    assert last["input"] == 10 and last["cost_usd"] == 0.01
+    assert isinstance(last["first_ms"], int)

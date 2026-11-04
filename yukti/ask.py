@@ -12,6 +12,7 @@ import html
 import json
 import os
 import tempfile
+import time
 from typing import Any
 
 from IPython.core.error import UsageError
@@ -22,6 +23,7 @@ from .actions import (
     CELL_OUTPUT,
     INSERT_CELLS,
     RUN_CELLS,
+    USAGE,
     action_line,
     tool_payload,
 )
@@ -343,17 +345,27 @@ class YuktiMagics(Magics):
                     trace.write("tool_result", {"line": line, "text": result})
                     return result
 
+                started = time.monotonic()
+                first_ms: list[int] = []
+
+                def on_delta(delta: str) -> None:
+                    if not first_ms:
+                        first_ms.append(round((time.monotonic() - started) * 1000))
+                    show(stream.feed(delta))
+
                 try:
                     answer = server.run(
                         transcript,
                         images,
-                        on_delta=lambda delta: show(stream.feed(delta)),
+                        on_delta=on_delta,
                         on_event=lambda event: trace.write("codex_event", event),
                         on_tool=show_tool,
                         on_action=change_notebook,
                     )
                     if not stream.received_delta:
                         show(stream.feed(answer))
+                    if server.usage is not None:
+                        send({"type": USAGE, **server.usage, "first_ms": (first_ms or [None])[0]})
                 finally:
                     spinner.update(HTML(""))
                     comm.close()

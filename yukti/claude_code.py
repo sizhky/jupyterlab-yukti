@@ -38,6 +38,7 @@ from .app_server import (
     workdir,
 )
 from .settings import DEFAULTS, PROFILES
+from .usage import claude_usage
 
 
 # The MCP server name the CLI prefixes to every notebook tool.
@@ -283,6 +284,8 @@ class ClaudeCode(AppServer):
         self.thread_params = {"baseInstructions": instructions, "command": command}
         self.thread_id = ""
         self.turn_id = ""
+        # The last turn's tokens and cost; see ``yukti.usage``.
+        self.usage: Optional[dict[str, Any]] = None
         self._on_action: Optional[Callable[[str, Any], str]] = None
         self._on_tool: Optional[Callable[[Mapping[str, Any]], None]] = None
         self._open(command, environment)
@@ -443,6 +446,7 @@ class ClaudeCode(AppServer):
             if kind != "result":
                 continue
             self.turn_id = ""
+            self.usage = claude_usage(message)
             if message.get("is_error") or message.get("subtype") != "success":
                 errors = message.get("errors") or [message.get("result") or message.get("subtype")]
                 raise RuntimeError(f"Claude Code turn failed: {errors}")

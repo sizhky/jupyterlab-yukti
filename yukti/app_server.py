@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .actions import tool_specs
 from .settings import APPROVAL_PARAMS, DEFAULTS
+from .usage import codex_usage
 
 
 PREAMBLE = """You are Yukti. Answer the final [user] question using the notebook
@@ -397,6 +398,8 @@ class AppServer:
         # Set while one turn is running, so close() knows there is a turn to
         # stop and a completed turn is never interrupted.
         self.turn_id = ""
+        # The last turn's tokens and cost; see ``yukti.usage``.
+        self.usage: Optional[dict[str, Any]] = None
         try:
             self._initialize()
         except Exception:
@@ -597,6 +600,10 @@ class AppServer:
             params = message.get("params", {})
             if method == "turn/started":
                 self.turn_id = str(params.get("turn", {}).get("id") or "")
+            # One thread per ``%%ask``, so the thread total is this turn's.
+            if method == "thread/tokenUsage/updated":
+                total = params.get("tokenUsage", {}).get("total", {})
+                self.usage = codex_usage(total, str(self.settings.get("model", "")))
             if method == "item/tool/call" and "id" in message:
                 self._answer_tool(message, on_action)
                 continue
