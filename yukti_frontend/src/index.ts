@@ -2029,6 +2029,12 @@ const DIFF_STYLE = `
 
 type StagedCell = { id: string; cell_type: string; source: string };
 
+/** The git copies the diff can compare against; ``''`` is the index. */
+const DIFF_BASES = [
+  { value: '', label: 'Staged' },
+  { value: 'HEAD', label: 'Last commit' }
+];
+
 /**
  * Pair live cells with staged cells along their longest common subsequence.
  *
@@ -2069,7 +2075,7 @@ function alignCells(
  * The frontend has no git of its own, and ``user_expressions`` reaches the
  * kernel without ``%load_ext yukti`` and without an entry in the history.
  */
-async function fetchStaged(panel: NotebookPanel): Promise<StagedCell[]> {
+async function fetchStaged(panel: NotebookPanel, rev: string): Promise<StagedCell[]> {
   const kernel = panel.sessionContext.session?.kernel;
   if (kernel == null) {
     throw new Error('The diff reads git through the kernel. Start a kernel first.');
@@ -2085,7 +2091,7 @@ async function fetchStaged(panel: NotebookPanel): Promise<StagedCell[]> {
     silent: true,
     store_history: false,
     user_expressions: {
-      staged: `__import__('yukti.staged').staged.staged_json(${JSON.stringify(path)})`
+      staged: `__import__('yukti.staged').staged.staged_json(${JSON.stringify(path)}, ${JSON.stringify(rev)})`
     }
   }).done;
   const result = (reply.content as any).user_expressions?.staged;
@@ -2131,6 +2137,41 @@ function lineMarks(text: string, marks: string[]) {
 }
 
 /**
+ * Split a markdown line diff into blocks a renderer can draw one at a time.
+ *
+ * Blank lines outside code fences end a block. An unchanged block renders
+ * once. A changed block renders its staged form as ``del`` and its live form
+ * as ``ins``, so each side stays valid markdown.
+ */
+function markdownBlocks(diff: { text: string; marks: string[] }) {
+  const groups: { lines: string[]; marks: string[] }[] = [{ lines: [], marks: [] }];
+  let fenced = false;
+  diff.text.split('\n').forEach((line, n) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+    }
+    const last = groups[groups.length - 1];
+    if (!fenced && line.trim() === '') {
+      if (last.lines.length) groups.push({ lines: [], marks: [] });
+      return;
+    }
+    last.lines.push(line);
+    last.marks.push(diff.marks[n]);
+  });
+  const side = (g: { lines: string[]; marks: string[] }, skip: string) =>
+    g.lines.filter((_, n) => g.marks[n] !== skip).join('\n');
+  return groups.filter(g => g.lines.length).flatMap(g => {
+    if (!g.marks.some(Boolean)) {
+      return [{ source: g.lines.join('\n'), mark: '' }];
+    }
+    return [
+      { source: side(g, 'ins'), mark: 'del' },
+      { source: side(g, 'del'), mark: 'ins' }
+    ].filter(b => b.source.trim());
+  });
+}
+
+/**
  * The staged copy of one cell, drawn the way the notebook draws its kind.
  *
  * Code gets a read-only editor in the notebook's language, and markdown gets
@@ -2153,22 +2194,28 @@ function oldPane(
   if (old == null) {
     return pane;
   }
-  if (old.cell_type === 'markdown' && live == null) {
-    const renderer = notebook.rendermime.createRenderer('text/markdown');
-    void renderer.renderModel({
-      trusted: false,
-      data: { 'text/markdown': old.source },
-      metadata: {},
-      setData: () => undefined
-    });
-    pane.append(renderer.node);
-    owned.push(renderer);
+  if (old.cell_type === 'markdown') {
+    const blocks = live == null
+      ? [{ source: old.source, mark: '' }]
+      : markdownBlocks(lineDiff(old.source, live));
+    for (const block of blocks) {
+      const renderer = notebook.rendermime.createRenderer('text/markdown');
+      void renderer.renderModel({
+        trusted: false,
+        data: { 'text/markdown': block.source },
+        metadata: {},
+        setData: () => undefined
+      });
+      if (block.mark) {
+        renderer.node.classList.add(`yukti-diff-${block.mark}`);
+      }
+      pane.append(renderer.node);
+      owned.push(renderer);
+    }
     return pane;
   }
   const diff = live == null ? null : lineDiff(old.source, live);
-  const model = new CodeEditor.Model({
-    mimeType: old.cell_type === 'markdown' ? 'text/x-ipythongfm' : notebook.codeMimetype
-  });
+  const model = new CodeEditor.Model({ mimeType: notebook.codeMimetype });
   model.sharedModel.setSource(diff?.text ?? old.source);
   const editor = factory.newInlineEditor({
     host: pane,
@@ -2356,9 +2403,29 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
           }
         }, 300);
       };
+      const base = document.createElement('select');
+      base.className = 'jp-mod-styled';
+      base.title = 'The git copy the diff compares against';
+      base.setAttribute('aria-label', 'Diff against');
+      for (const choice of DIFF_BASES) {
+        const option = document.createElement('option');
+        option.value = choice.value;
+        option.textContent = choice.label;
+        base.appendChild(option);
+      }
+      const show = async () => {
+        try {
+          old = await fetchStaged(panel, base.value);
+        } catch (error) {
+          void showErrorMessage('Yukti diff', String(error));
+          return;
+        }
+        painted = sources();
+        paintDiff(panel.content, factory, old);
+      };
       const button = new ToolbarButton({
         label: 'Diff',
-        tooltip: 'Show each cell beside its git-staged copy',
+        tooltip: 'Show each cell beside its git copy',
         onClick: async () => {
           const model = panel.content.model;
           if (old != null) {
@@ -2366,22 +2433,27 @@ const diffPlugin: JupyterFrontEndPlugin<void> = {
             model?.sharedModel.changed.disconnect(repaint);
             clearDiff(panel.content);
           } else {
-            try {
-              old = await fetchStaged(panel);
-            } catch (error) {
-              void showErrorMessage('Yukti diff', String(error));
-              return;
+            await show();
+            if (old != null) {
+              model?.sharedModel.changed.connect(repaint);
             }
-            painted = sources();
-            paintDiff(panel.content, factory, old);
-            model?.sharedModel.changed.connect(repaint);
           }
           button.pressed = old != null;
         }
       });
+      // A new base while the diff is on repaints against that copy.
+      base.addEventListener('change', () => {
+        if (old != null) {
+          void show();
+        }
+      });
+      const baseNode = document.createElement('div');
+      baseNode.className = MODE_CLASS;
+      baseNode.append(base);
       if (!panel.toolbar.insertAfter(MODE_CLASS, DIFF_CLASS, button)) {
         panel.toolbar.addItem(DIFF_CLASS, button);
       }
+      panel.toolbar.insertAfter(DIFF_CLASS, `${DIFF_CLASS}-base`, new Widget({ node: baseNode }));
     });
   }
 };

@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Any
 
 
-def staged_cells(path: str) -> list[dict[str, str]]:
-    """Read the staged copy of the notebook at ``path``.
+def staged_cells(path: str, rev: str = "") -> list[dict[str, str]]:
+    """Read the copy of the notebook at ``path`` that git holds at ``rev``.
+
+    An empty ``rev`` reads the index, the staged copy. ``"HEAD"`` reads the
+    last commit.
 
     A notebook the index does not hold yet has no staged cells, so every live
     cell reads as added. A folder outside any repository raises instead.
@@ -25,10 +28,12 @@ def staged_cells(path: str) -> list[dict[str, str]]:
     >>> _ = subprocess.run(["git", "-C", str(root), "add", "a.ipynb"], check=True)
     >>> staged_cells(str(root / "a.ipynb"))
     [{'id': 'x', 'cell_type': 'code', 'source': 'a = 1\\na'}]
+    >>> staged_cells(str(root / "a.ipynb"), "HEAD")
+    []
     """
     file = Path(path).expanduser()
     result = subprocess.run(
-        ["git", "show", f":./{file.name}"],
+        ["git", "show", f"{rev}:./{file.name}"],
         cwd=file.parent,
         capture_output=True,
         text=True,
@@ -47,8 +52,8 @@ def staged_cells(path: str) -> list[dict[str, str]]:
     ]
 
 
-def staged_json(path: str) -> Any:
-    """Wrap the staged cells so a ``user_expressions`` reply carries JSON."""
+def staged_json(path: str, rev: str = "") -> Any:
+    """Wrap the cells at ``rev`` so a ``user_expressions`` reply carries JSON."""
     from IPython.display import JSON
 
-    return JSON(staged_cells(path))
+    return JSON(staged_cells(path, rev))
