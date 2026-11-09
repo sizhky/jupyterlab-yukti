@@ -1,11 +1,11 @@
-t1: ask-magic -> transcript builds
+t1: turn -> transcript builds
 	step=s1
 	phase=build
 	pair=p-build
 	message=sync
 	note=build_transcript(cells, question)
 	description=%%ask hands over the cells the frontend sent and the question the user typed. One call returns the whole request.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)]" context=3}
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[transcript = build_transcript(cells, question)]" context=3}
 t2: transcript -> output-boundary limits
 	step=s2
 	phase=output
@@ -41,10 +41,10 @@ t5: output-boundary -> transcript returns
 	note=the request, cut if it was over 512 KB
 	description=Two limits, one function. truncate takes the limit and the label as arguments, so the output rule and the request rule share one implementation.
 	code=[truncate](../../yukti/context.py){show=symbol symbol=truncate kind=Function focus="match[if len(data) <= limit:] match[def truncate(content: str, limit: int, label: str)]" context=1}
-t6: transcript -> ask-magic returns
+t6: transcript -> turn returns
 	step=s4
 	phase=build
 	pair=p-build
 	note=one bounded transcript
 	description=%%ask receives one string that is under 512 KB whatever the notebook held. That string is what the Codex App Server runs.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)]" context=3}
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[transcript = build_transcript(cells, question)]" context=3}

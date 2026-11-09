@@ -20,13 +20,10 @@ Restart JupyterLab after installation.
 
 ## Use Yukti
 
-Load the kernel extension once near the top of the notebook:
+Yukti works on any kernel: Python, BasedPL, or any other language. The Jupyter
+server runs each question, so the notebook needs no setup cell.
 
-```python
-%load_ext yukti
-```
-
-Then ask a question in a cell:
+Ask a question in a cell:
 
 ```python
 %%ask
@@ -38,7 +35,9 @@ Yukti chooses how to apply the response. Questions remain rendered answers in th
 it, or after an earlier cell they belong next to. Requests to change earlier cells
 update those cells.
 
-Yukti sends cells above that question through a Jupyter Comm channel. Outputs are
+The frontend sends cells above that question to the Jupyter server over one
+WebSocket, and the kernel never receives the `%%ask` cell. When the agent runs a
+cell, the notebook's own kernel runs it, in the notebook's language. Outputs are
 limited to 8 KB each, and the complete request is limited to 512 KB. Yukti starts
 a disposable Codex App Server thread with its own visible base instruction, an
 empty working directory, a read-only sandbox, and no project instruction files.
@@ -49,7 +48,7 @@ call when Codex reports API-key authentication.
 ## Change what `%%ask` may do
 
 By default Codex only reads the transcript. A `%%yukti` cell raises that limit
-for every later `%%ask` cell in the same kernel session:
+for every later `%%ask` cell in the same notebook until the Jupyter server stops:
 
 ```python
 %%yukti

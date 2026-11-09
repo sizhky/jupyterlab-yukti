@@ -26,6 +26,7 @@
     "@jupyterlab/filebrowser": "^4.4.0",
     "@jupyterlab/nbformat": "^4.4.0",
     "@jupyterlab/notebook": "^4.4.0",
+    "@jupyterlab/services": "^7.4.0",
     "@jupyterlab/settingregistry": "^4.4.0",
     "@jupyterlab/ui-components": "^4.4.0",
     "@lezer/highlight": "^1.1.0",

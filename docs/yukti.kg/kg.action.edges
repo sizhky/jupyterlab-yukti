@@ -1,19 +1,72 @@
-a1: ask-magic -> tool-payload checks
+a1: turn -> tool-payload checks
 	step=s1
 	pair=p-payload
 	message=sync
-	note=tool_payload(tool, arguments, cells, inserted)
-	description=change_notebook passes the tool call, the transcript cells and the cells inserted so far in this turn.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[payload = tool_payload(]" context=3}
-a2: tool-payload -> ask-magic returns
+	note=tool_payload(tool, arguments, cells, held)
+	description=change_notebook passes the tool call, the transcript cells and the cells this turn holds: the prefix cells, with any replacement applied, and the cells inserted so far.
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[payload = tool_payload(]" context=3}
+a2: tool-payload -> turn returns
 	step=s1
 	pair=p-payload
 	note=cells with cell_id and after_cell_id
 	description=An insert_cells call returns each cell with a new cell_id and the anchor it named. An anchor outside the allowed set raises RuntimeError, and the model can call again.
 	code=[tool_payload](../../yukti/actions.py){show=symbol symbol=tool_payload kind=Function focus="match[_inserted_cell(cell, allowed)] match[uuid4().hex]" context=2}
-a3: ask-magic -> frontend sends
+a3: turn -> ask-socket sends
 	step=s2
 	message=async
+	status=proposed, pending user review
 	note=insert_cells
-	description=The payload goes over the comm. The frontend inserts each cell after its anchor, or after the cell inserted last, or below %%ask. It drops the call when an anchor is missing from the notebook.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[send(payload)]" context=2}
+	description=The turn passes the payload to emit. A run_cells payload is not sent; the turn runs each cell instead (step 4).
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[emit(payload)]" context=3}
+a4: ask-socket -> frontend sends
+	step=s3
+	message=async
+	status=proposed, pending user review
+	note=insert_cells
+	description=The socket writes the payload to the notebook. The frontend inserts each cell after its anchor, or after the cell inserted last, or below %%ask. It drops the call when an anchor is missing from the notebook.
+	code=[AskSocket.emit](../../yukti/server.py){show=symbol symbol=AskSocket.emit kind=Method focus="match[self.write_message(json.dumps(payload, default=str))]" context=3}
+a5: turn -> ask-socket runs
+	step=s4
+	pair=p-ran
+	message=sync
+	status=proposed, pending user review
+	note=run(cell_id, source)
+	description=For each cell of a run_cells call, the turn passes the source it holds and blocks until the outputs return.
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[outputs = run(]" context=3}
+a6: ask-socket -> frontend sends
+	step=s4
+	pair=p-ran-frontend
+	message=sync
+	status=proposed, pending user review
+	note=run: cell_id, source
+	description=The socket keeps a Future for the cell_id and sends one run message.
+	code=[AskSocket.run](../../yukti/server.py){show=symbol symbol=AskSocket.run kind=Method focus="match[self.waiting[cell_id] = done] match[return done.result()]" context=2}
+a7: frontend -> notebook-kernel runs
+	step=s4
+	pair=p-kernel
+	message=sync
+	status=proposed, pending user review
+	note=CodeCell.execute(cell)
+	description=runNamed runs the cell through the notebook's own session, so the outputs also appear in the cell the reader sees.
+	code=[runNamed](../../yukti_frontend/src/index.ts){show=symbol symbol=runNamed kind=Function focus="match[await CodeCell.execute(target, panel.sessionContext)]" context=3}
+a8: notebook-kernel -> frontend returns
+	step=s4
+	pair=p-kernel
+	status=proposed, pending user review
+	note=outputs of the cell
+	description=The frontend reads the outputs from the cell model after the run ends.
+	code=[runNamed](../../yukti_frontend/src/index.ts){show=symbol symbol=runNamed kind=Function focus="match[return target.model.outputs.toJSON();]" context=2}
+a9: frontend -> ask-socket returns
+	step=s4
+	pair=p-ran-frontend
+	status=proposed, pending user review
+	note=ran: cell_id, outputs
+	description=The frontend sends the outputs over the same socket.
+	code=[runAsk](../../yukti_frontend/src/index.ts){show=symbol symbol=runAsk kind=Function focus="match[type: 'ran',]" context=3}
+a10: ask-socket -> turn returns
+	step=s4
+	pair=p-ran
+	status=proposed, pending user review
+	note=outputs
+	description=on_message sets the Future and the turn resumes. The turn turns the outputs into text for the model with said, cut to 8 KB.
+	code=[AskSocket.on_message](../../yukti/server.py){show=symbol symbol=AskSocket.on_message kind=Method focus="match[.set_result(outputs if]" context=3}

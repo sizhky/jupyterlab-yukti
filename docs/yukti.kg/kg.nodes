@@ -1,20 +1,24 @@
 frontend: Notebook frontend
-	description=The JupyterLab extension. It sends the cells above %%ask, then shows the answer the kernel renders. Hidden cells are dropped from those cells. It also applies the notebook tool calls of the turn. insert_cells puts each cell after its anchor (after_cell_id) in sharedModel.cells, one transaction per cell because sharedModel.cells updates when a transaction ends, and drops the whole call when an anchor is missing. It records each inserted id in insertedCellIds, and run_cells and cell_output reach only those cells, wherever they landed in the notebook.
-	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[comm.open({]" context=3}
+	description=The JupyterLab extension. hostAskRuns patches CodeCell.execute, so an %%ask or %%yukti cell goes to the Jupyter server and never to the kernel. runAsk opens one WebSocket, sends the cells above %%ask, and shows each output message in the cell. Hidden cells are dropped from those cells. It also applies the notebook tool calls of the turn. insert_cells puts each cell after its anchor (after_cell_id) in sharedModel.cells, one transaction per cell because sharedModel.cells updates when a transaction ends, and drops the whole call when an anchor is missing. It records each inserted id in insertedCellIds. For a run message it runs the named cell through the notebook kernel (runNamed) and sends the outputs back. Proposed, pending user review.
+	code=[runAsk](../../yukti_frontend/src/index.ts){show=symbol symbol=runAsk kind=Function focus="match[new WebSocket(yuktiUrl('ask', true))] match[type: 'ask',]" context=3}
 hidden-cells: isHidden
 	description=The function that decides whether a cell stays out of the %%ask prompt. A %%yukti cell is hidden by default. The yukti-hidden tag hides any cell, and the yukti-shown tag shows a %%yukti cell. A tag holds an override only, as yukti_wrap does. It is a call inside the frontend, not a peer of it.
 	code=[isHidden](../../yukti_frontend/src/index.ts){show=symbol symbol=isHidden kind=Function focus=all}
-prefix-comm: Prefix comm
-	description=The Jupyter comm that carries one turn. It holds the prefix until %%ask takes it, and stays open until %%ask closes it.
-	code=[register_prefix_comm](../../yukti/comm.py){show=symbol symbol=register_prefix_comm kind=Function focus="match[kernel.comm_manager.register_target(COMM_TARGET, cache.open)]" context=2}
-ask-magic: %%ask magic
-	description=The cell magic that drives the turn. It takes the prefix, builds one bounded transcript, runs the server, and renders every delta.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[= self.prefixes.take()] match[transcript = build_transcript(cells, cell)] match[with backend(root, settings) as server:]" context=1}
+ask-socket: Ask socket
+	description=The Jupyter server WebSocket at /yukti/ask. It carries one turn. The frontend opens it with the question. The server runs the turn in an executor thread and writes every output, insert_cells, replace_cells, usage, done and error message back. For a run it sends a run message and blocks on a Future until the frontend replies ran with the outputs. A closed socket fails the waiting Futures. Proposed, pending user review.
+	code=[AskSocket](../../yukti/server.py){show=symbol symbol=AskSocket kind=Class focus="match[class AskSocket(] match[def run(] match[def on_message(]" context=2}
+	decision=The server hosts the turn, so the notebook kernel can be any language. Pro: Yukti works on the BasedPL kernel. Con: the agent runs code in the kernel from the server, so the socket needs the execute right.
+turn: ask
+	description=The function that runs one turn with no kernel. It checks the option line and the image paths, builds one bounded transcript, starts the backend, and sends every delta through emit. For each turn it keeps a held dict of cells by cell_id, seeded with copies of the prefix cells. insert_cells adds to it and replace_cells updates the source, so run_cells runs the source the notebook now holds. A run goes through run, which waits for the notebook. A relative cwd and the image paths resolve against the notebook folder. Proposed, pending user review.
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[transcript = build_transcript(cells, question)] match[backend(root, settings) as server:]" context=1}
+notebook-kernel: Notebook kernel
+	description=The kernel of the notebook, in any language. It never receives %%ask or %%yukti. It runs only the cells the model names, through the same CodeCell.execute path as a cell the reader runs. Proposed, pending user review.
+	code=[runNamed](../../yukti_frontend/src/index.ts){show=symbol symbol=runNamed kind=Function focus="match[await CodeCell.execute(target, panel.sessionContext)]" context=3}
 app-server: Codex App Server
 	description=The Codex process %%ask starts for this turn. It runs the model and streams the answer back.
 	code=[AppServer](../../yukti/app_server.py){show=symbol symbol=AppServer kind=Class focus="match[def run(] match[def __exit__(self, *_: Any) -> None:]" context=2}
 transcript: build_transcript
-	description=The function that turns cells and their outputs into one model transcript. It is a call inside %%ask, not a peer of it.
+	description=The function that turns cells and their outputs into one model transcript. It is a call inside the turn, not a peer of it.
 	code=[build_transcript](../../yukti/context.py){show=symbol symbol=build_transcript kind=Function focus=all}
 output-boundary: truncate
 	description=The function that holds one string under a byte limit. It keeps the head and the tail, and names how much it cut.
@@ -23,7 +27,7 @@ settings: parse_settings
 	description=The function that reads a %%yukti cell. A backend line picks codex or claude and sets the default model of that backend. A model the backend cannot run is refused. An empty %%yukti cell or %yukti shows the settings table in force (summary). %%yukti help shows the vocabulary (help_text); help_transform rewrites both empty forms to the line magic because IPython refuses an empty cell magic. The key idle_timeout (whole seconds above 0, default 600) sets how long the backend may stay silent (idle-timeout).
 	code=[parse_settings](../../yukti/settings.py){show=symbol symbol=parse_settings kind=Function focus="match[BACKENDS[raw][] match[cannot run model]" context=2}
 claude-code: Claude Code backend
-	description=The class that gives %%ask the same contract as the Codex App Server, over the user's own claude -p process. It reuses the pipe reader and replaces the protocol. Notebook tools stay in the kernel.
+	description=The class that gives %%ask the same contract as the Codex App Server, over the user's own claude -p process. It reuses the pipe reader and replaces the protocol. Notebook tools stay in the turn.
 	code=[ClaudeCode](../../yukti/claude_code.py){show=symbol symbol=ClaudeCode kind=Class focus="match[class ClaudeCode(AppServer):] match[def run(]" context=2}
 	decision=ClaudeCode subclasses AppServer, so the pipe reader, close and the context manager have one owner. workdir() and _open() were extracted from AppServer for this reuse.
 subscription-check: require_subscription
@@ -45,7 +49,7 @@ image-paste: trackImagePastes
 	code=[trackImagePastes](../../yukti_frontend/src/index.ts){show=symbol symbol=trackImagePastes kind=Function focus="match[saveImage(contents, panel.context.path, file)] match[replaceSelection?.(]" context=2}
 	decision=The image is a file, not a cell attachment, because an nbformat code cell has no attachments. The folder is yukti-images, not a dot folder, because jupyter_server refuses hidden paths. Pro: the image survives a rerun and a reload, and the notebook stays small. Con: a notebook copied alone leaves its images behind.
 question-images: question_images
-	description=The function that returns the Markdown image paths in the %%ask question, in order, with the IMAGE_REFERENCE regex. It is a call inside %%ask, not a peer of it.
+	description=The function that returns the Markdown image paths in the %%ask question, in order, with the IMAGE_REFERENCE regex. It is a call inside the turn, not a peer of it.
 	code=[question_images](../../yukti/context.py){show=symbol symbol=question_images kind=Function focus=all}
 turn-input: turn_input
 	description=The function that builds the turn/start input of the Codex App Server. It is the transcript as a text item, then one localImage item with the absolute path for each image. It is a call inside AppServer, not a peer of it.
@@ -58,29 +62,29 @@ idle-timeout: AppServer._read
 	code=[AppServer._read](../../yukti/app_server.py){show=symbol symbol=AppServer._read kind=Method focus="match[self._line(time.monotonic() + self.idle_timeout)] match[raise TimeoutError(]" context=3}
 	decision=A rolling idle timeout replaces one deadline set when the process opened. The old deadline was now + 300 s and every read used it, so any %%ask turn longer than 5 minutes raised "Claude Code timed out" while it was still streaming. The limit is the %%yukti key idle_timeout (whole seconds above 0, default 600), and the constructor timeout argument is removed from AppServer and ClaudeCode. Pro: only a silent backend is stopped, and the user can raise the limit. Con: a backend that sends a line every few seconds without finishing is never stopped.
 tool-payload: tool_payload
-	description=The function that checks one notebook tool call and returns the payload the frontend applies. For insert_cells each cell has a cell_type, a source and an optional after_cell_id. The anchor must be a cell_id in the transcript (the cells above %%ask that are not hidden) or a cell inserted earlier in this turn, the same set replace_cells accepts. Without an anchor a cell goes after the cell inserted last, or below the %%ask cell. Each cell gets a new cell_id. A bad cell or anchor raises, and the model reads the sentence. It is a call inside %%ask, not a peer of it.
+	description=The function that checks one notebook tool call and returns the payload the frontend applies. For insert_cells each cell has a cell_type, a source and an optional after_cell_id. The anchor must be a cell_id in the transcript (the cells above %%ask that are not hidden) or a cell inserted earlier in this turn, the same set replace_cells accepts. run_cells accepts the same held set: a code cell of the transcript, the user's own included, or a code cell Yukti inserted. It refuses a markdown cell and a cell the turn does not hold. Without an anchor a cell goes after the cell inserted last, or below the %%ask cell. Each cell gets a new cell_id. A bad cell or anchor raises, and the model reads the sentence. It is a call inside the turn, not a peer of it.
 	code=[tool_payload](../../yukti/actions.py){show=symbol symbol=tool_payload kind=Function focus="match[_inserted_cell(cell, allowed)] match[uuid4().hex]" context=2}
-	decision=insert_cells reuses the allowed set of replace_cells for its anchor, so one rule names the cells a tool may touch. Pro: the model cannot anchor on a cell the transcript hid. Con: a cell the reader added after the prefix was sent cannot be an anchor.
+	decision=insert_cells reuses the allowed set of replace_cells for its anchor, so one rule names the cells a tool may touch. Pro: the model cannot anchor on a cell the transcript hid. Con: a cell the reader added after the prefix was sent cannot be an anchor. run_cells uses the same held set. Pro: the agent can run a test it fixed with replace_cells, and a replaced cell runs its new source. Con: the agent can run any code cell of the transcript, so the run rules tell it to run one only when the answer depends on its output, and to run its dependencies first.
 diff-plugin: diffPlugin
 	description=The plugin that adds a Diff toolbar button to each notebook. A press reads the staged cells once (fetch-staged) and paints them (paint-diff). A second press clears the view (clear-diff). While the view is on, every change of the shared model repaints after 300 ms with the staged cells kept from the press, so colours follow edits without another git call. It is a call inside the frontend, not a peer of it.
-	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[old = await fetchStaged(panel)] match[paintDiff(panel.content, old)] match[clearDiff(panel.content)]" context=2}
+	code=[diffPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=diffPlugin kind=Variable focus="match[: await fetchStaged(panel, base.value);] match[paintDiff(panel.content, factory, old, lang)] match[clearDiff(panel.content)]" context=2}
 	decision=The staged cells are read once per press, not on each repaint. Pro: typing never starts a git process. Con: a git add made after the press shows only after the reader presses Diff twice.
 fetch-staged: fetchStaged
-	description=The function that asks the kernel for the staged copy of the notebook. The frontend has no git. It sends a silent execute request with a user_expressions call to yukti.staged.staged_json, so it needs no %load_ext yukti and adds nothing to the history. A notebook with no kernel, or an error reply, throws, and the plugin shows the message.
-	code=[fetchStaged](../../yukti_frontend/src/index.ts){show=symbol symbol=fetchStaged kind=Function focus="match[user_expressions: {] match[throw new Error(`${result?.ename]" context=3}
-staged-json: staged_json
-	description=The function that wraps the staged cells in IPython.display.JSON, so a user_expressions reply carries them as application/json. It is a call inside the kernel module yukti.staged, not a peer of it.
-	code=[staged_json](../../yukti/staged.py){show=symbol symbol=staged_json kind=Function focus=all}
+	description=The function that asks the Jupyter server for the staged copy of the notebook. The frontend has no git. It sends a GET request to /yukti/staged with the notebook path, so it needs no kernel and works on any language. An error reply throws, and the plugin shows the message. Proposed, pending user review.
+	code=[fetchStaged](../../yukti_frontend/src/index.ts){show=symbol symbol=fetchStaged kind=Function focus="match[yuktiUrl('staged') + query] match[throw new Error(body.message ?? response.statusText)]" context=3}
+staged-handler: StagedHandler
+	description=The server route that serves the Diff button. GET /yukti/staged reads the notebook path, calls staged_cells and returns the cells as JSON. It replaces the kernel user_expressions read. A git error returns status 400 with the message. Proposed, pending user review.
+	code=[StagedHandler.get](../../yukti/server.py){show=symbol symbol=StagedHandler.get kind=Method focus="match[self.finish(json.dumps(staged_cells(] match[raise web.HTTPError(400, str(error))]" context=2}
 staged-cells: staged_cells
 	description=The function that reads the notebook as the git index holds it. It runs git show :./<name> in the notebook folder and returns each cell as id, cell_type and source. A notebook the index does not hold returns an empty list, so every live cell reads as added. A folder outside a repository raises RuntimeError with the git message.
-	code=[staged_cells](../../yukti/staged.py){show=symbol symbol=staged_cells kind=Function focus="match[\"show\", f\":./{file.name}\"],] match[raise RuntimeError(result.stderr.strip())]" context=2}
+	code=[staged_cells](../../yukti/staged.py){show=symbol symbol=staged_cells kind=Function focus="match[capture_output=True,] match[raise RuntimeError(result.stderr.strip())]" context=2}
 	decision=The index copy is the baseline, not HEAD. Pro: the diff shows what git add would add, and a staged notebook reads as clean. Con: a notebook not yet staged shows every cell as added.
 align-cells: alignCells
 	description=The function that pairs live cells with staged cells along their longest common subsequence. Each row holds a live index, a staged index, or both. The keys are cell ids, or sources when a staged cell has no id. A cell that moved reads as one deletion and one addition. It is a call inside paint-diff, not a peer of it.
 	code=[alignCells](../../yukti_frontend/src/index.ts){show=symbol symbol=alignCells kind=Function focus="match[lcs[i][j] = live[i] === old[j]] match[rows.push([null, j++])]" context=2}
 paint-diff: paintDiff
 	description=The function that puts the staged source in a right-hand pane of each live cell (grid layout). A paired cell with different source gets the changed class (orange outline). A live cell with no pair gets the added class (green) and an empty pane. A staged cell with no live pair becomes a red row, empty on the left, inside the next live cell, or after the last one, because the windowed notebook owns the space between cells. It clears the previous paint first.
-	code=[paintDiff](../../yukti_frontend/src/index.ts){show=symbol symbol=paintDiff kind=Function focus="match[const rows = alignCells(] match[cell.addClass(DIFF_ADDED_CLASS)] match[cells[cells.length - 1].node.append(...gone)]" context=2}
+	code=[paintDiff](../../yukti_frontend/src/index.ts){show=symbol symbol=paintDiff kind=Function focus="match[const rows = alignCells(] match[cell.addClass(added ? DIFF_ADDED_CLASS : DIFF_CHANGED_CLASS)] match[last.node.append(...gone)]" context=2}
 	decision=A deleted cell is a row inside the next live cell, not a node between cells. Pro: it survives windowing and needs no cell of its own. Con: the row moves with the cell that follows it.
 clear-diff: clearDiff
 	description=The function that removes the diff class, the staged panes, the deleted rows and the changed and added classes from the notebook. paintDiff calls it first, so a repaint never stacks panes.

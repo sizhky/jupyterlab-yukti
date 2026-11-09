@@ -25,6 +25,7 @@ code_source=../../
 
 @relations
 sends color=relation.sends
+runs color=relation.runs
 takes color=relation.takes
 builds color=relation.builds
 streams color=relation.streams
@@ -42,7 +43,7 @@ ask:
 	sequence_role=role
 	sequence_phase=phase
 	sequence_activation=true
-	sequence_lanes=frontend,prefix-comm,ask-magic,app-server
+	sequence_lanes=frontend,ask-socket,turn,app-server,notebook-kernel
 	sequence_message=message
 	sequence_fragment=fragment
 	sequence_operand=operand
@@ -50,25 +51,28 @@ ask:
 	color_by=step
 	edge_color_by=step
 	edge_label_from=note
-	hover_attrs=description,code
-	caption="Four participants, one round trip. The prefix comm opens before the cell runs and closes after the answer, so its activation bar spans the whole turn. build_transcript and truncate are calls inside %%ask, not participants; the transcript view gives them their own lifelines."
+	hover_attrs=description,code,status
+	caption="Proposed view, pending user review: five participants, one round trip, and no kernel in the turn. The ask socket opens with the question and closes after the answer, so its activation bar spans the whole turn. The notebook kernel appears only when the model runs a cell. build_transcript and the byte limit are calls inside the turn, not participants; the transcript view gives them their own lifelines."
 	slides:
-		receive: Steps 1 to 2 — take the prefix
-			nodes=frontend,prefix-comm,ask-magic
-			caption="The frontend sends one notebook_prefix message and does not wait. The comm holds it until the cell starts, then take() hands over the cells and the comm handle at once. An empty comm ends the turn in the break box."
-		send: Step 3 — send one bounded request
-			nodes=ask-magic,app-server
-			caption="build_transcript turns the cells and the question into one string under 512 KB, and %%ask starts a Codex process with it. Open the transcript view to see the two limits that bound it."
-		answer: Steps 4 to 6 — stream the answer back
-			nodes=app-server,ask-magic,frontend,prefix-comm
-			caption="The loop box holds every delta. Each one reaches %%ask first, which decides its block, then reaches the cell through display. A finally block closes the comm, so the frontend learns the turn is over either way."
+		receive: Steps 1 to 2 - open the socket and start the turn
+			nodes=frontend,ask-socket,turn
+			caption="Proposed, pending review. The frontend sends one ask message and the socket runs the turn in an executor thread. The kernel does not see the cell."
+		send: Step 3 - send one bounded request
+			nodes=turn,app-server
+			caption="build_transcript turns the cells and the question into one string under 512 KB, and the turn starts a backend process with it. Open the transcript view to see the two limits that bound it."
+		answer: Steps 4 to 6 - stream the answer back
+			nodes=app-server,turn,ask-socket,frontend
+			caption="Proposed, pending review. The loop box holds every delta. Each one reaches the turn first, which decides its block, then goes through the socket to the cell. An error message or a done message ends the turn."
+		run: Step 7 - run a cell the model named
+			nodes=turn,ask-socket,frontend,notebook-kernel
+			caption="Proposed, pending review. The turn blocks while the frontend runs the cell through the notebook kernel and sends the outputs back over the same socket."
 transcript:
 	source=transcript
 	layout=sequence
 	sequence_role=role
 	sequence_phase=phase
 	sequence_activation=true
-	sequence_lanes=ask-magic,transcript,output-boundary
+	sequence_lanes=turn,transcript,output-boundary
 	sequence_message=message
 	sequence_fragment=fragment
 	sequence_operand=operand
@@ -83,7 +87,7 @@ transcript:
 			nodes=transcript,output-boundary
 			caption="The loop box runs once per cell above %%ask. Each output is cut to 8 KB before its block joins the request, so one long print cannot crowd out the other cells."
 		request: Steps 3 to 4 — bound the whole request
-			nodes=ask-magic,transcript,output-boundary
+			nodes=turn,transcript,output-boundary
 			caption="The blocks are joined, then a second call cuts the joined request to 512 KB. Many small cells can pass the first limit and still add up past this one, which is why both exist."
 claude:
 	source=claude
@@ -91,7 +95,7 @@ claude:
 	sequence_role=role
 	sequence_phase=phase
 	sequence_activation=true
-	sequence_lanes=settings,ask-magic,claude-code,subscription-check,claude-cli,tool-item
+	sequence_lanes=settings,turn,claude-code,subscription-check,claude-cli,tool-item
 	sequence_message=message
 	sequence_fragment=fragment
 	sequence_operand=operand
@@ -103,21 +107,21 @@ claude:
 	caption="The ask view with backend: claude. ClaudeCode replaces the Codex server behind the same run call. It checks the subscription login first, starts the user's own claude -p, answers the notebook tool calls in the kernel, and shows built-in tools as Codex items. Yukti never reads or forwards the OAuth credential."
 	slides:
 		choose: Steps 1 to 2 — pick the backend and check the login
-			nodes=settings,ask-magic,claude-code,subscription-check,claude-cli
+			nodes=settings,turn,claude-code,subscription-check,claude-cli
 			caption="A backend line picks the class. Before any process starts, require_subscription asks the claude binary for the login. Anthropic permits subscription use only through the unmodified binary, so Yukti reads the report and never the credential."
 		start: Step 3 — start the CLI
 			nodes=claude-code,claude-cli
 			caption="claude_command turns the settings into flags and registers the yukti sdk MCP server. One initialize request opens the control protocol."
 		turn: Steps 4 to 6 — stream, answer tool calls, finish
-			nodes=ask-magic,claude-code,claude-cli,tool-item
-			caption="Deltas reach on_delta as in the Codex path. A notebook tool call arrives as a control request and is answered in the kernel. A built-in tool is allowed, translated to a Codex item and shown."
+			nodes=turn,claude-code,claude-cli,tool-item
+			caption="Deltas reach on_delta as in the Codex path. A notebook tool call arrives as a control request and is answered in the turn. A built-in tool is allowed, translated to a Codex item and shown."
 image:
 	source=image
 	layout=sequence
 	sequence_role=role
 	sequence_phase=phase
 	sequence_activation=true
-	sequence_lanes=frontend,ask-magic,question-images,app-server,claude-code
+	sequence_lanes=frontend,turn,question-images,app-server,claude-code
 	sequence_message=message
 	sequence_fragment=fragment
 	sequence_operand=operand
@@ -129,13 +133,13 @@ image:
 	caption="Proposed view, pending review: pasting an image into an %%ask cell. The paste saves a file and writes a Markdown reference into the cell. The turn reads the reference, checks the file, and hands the path to the backend in the form that backend accepts. trackImagePastes, turn_input and user_content are calls inside their owners, not participants."
 	slides:
 		paste: Step 1 - paste saves a file and a reference
-			nodes=frontend,ask-magic
+			nodes=frontend,turn
 			caption="The paste handler saves the image under yukti-images next to the notebook and inserts a Markdown reference at the cursor. A code cell has no attachments, so the file is the only place the image can live."
 		read: Steps 2 to 3 - read and check the paths
-			nodes=ask-magic,question-images,frontend
+			nodes=turn,question-images,frontend
 			caption="question_images returns the paths in the cell. %%ask makes them absolute and stops with a UsageError when one file is missing."
 		send: Step 4 - one image form for each backend
-			nodes=ask-magic,app-server,claude-code
+			nodes=turn,app-server,claude-code
 			caption="Codex receives the absolute path as a localImage item. Claude Code receives the file bytes as a base64 image block."
 action:
 	source=action
@@ -143,7 +147,7 @@ action:
 	sequence_role=role
 	sequence_phase=phase
 	sequence_activation=true
-	sequence_lanes=ask-magic,tool-payload,frontend
+	sequence_lanes=frontend,ask-socket,turn,tool-payload,notebook-kernel
 	sequence_message=message
 	sequence_fragment=fragment
 	sequence_operand=operand
@@ -151,15 +155,22 @@ action:
 	color_by=step
 	edge_color_by=step
 	edge_label_from=note
-	hover_attrs=description,code
-	caption="Proposed view, pending review: one insert_cells call. tool_payload checks the cells and each optional after_cell_id against the transcript and this turn's inserts, then the frontend inserts each cell after its anchor and tracks it for run_cells and cell_output."
+	hover_attrs=description,code,status
+	caption="Proposed view, pending user review: one insert_cells call, then one run_cells call. tool_payload checks the cells and each optional after_cell_id against the transcript and this turn's cells. The socket carries the insert to the frontend. A run goes to the frontend, through the notebook kernel, and back as outputs that the turn reads."
+	slides:
+		insert: Steps 1 to 3 - check and insert
+			nodes=turn,tool-payload,ask-socket,frontend
+			caption="Proposed, pending review. tool_payload validates the call. The turn sends the payload through the socket, and the frontend inserts each cell after its anchor."
+		run: Step 4 - run and read
+			nodes=turn,ask-socket,frontend,notebook-kernel
+			caption="Proposed, pending review. The turn waits on a Future. The frontend runs the cell in the notebook kernel and returns the outputs for the model to read."
 diff:
 	source=diff
 	layout=sequence
 	sequence_role=role
 	sequence_phase=phase
 	sequence_activation=true
-	sequence_lanes=diff-plugin,fetch-staged,staged-json,staged-cells,paint-diff,align-cells,clear-diff
+	sequence_lanes=diff-plugin,fetch-staged,staged-handler,staged-cells,paint-diff,align-cells,clear-diff
 	sequence_message=message
 	sequence_fragment=fragment
 	sequence_operand=operand
@@ -168,11 +179,11 @@ diff:
 	edge_color_by=step
 	edge_label_from=note
 	hover_attrs=description,code
-	caption="Proposed view, pending review: the Diff toolbar button. One press reads the staged cells through the kernel, pairs them with the live cells and paints a right-hand pane in each cell. Edits repaint from the cells read at the press. A second press clears the view. alignCells and staged_json are calls inside their owners, not peers."
+	caption="Proposed view, pending review: the Diff toolbar button. One press reads the staged cells from the Jupyter server, pairs them with the live cells and paints a right-hand pane in each cell. Edits repaint from the cells read at the press. A second press clears the view. alignCells and staged_json are calls inside their owners, not peers."
 	slides:
-		read: Step 1 - read the staged cells through the kernel
+		read: Step 1 - read the staged cells from the server
 			nodes=diff-plugin,fetch-staged,staged-json,staged-cells
-			caption="The frontend has no git. A silent user_expressions request reaches yukti.staged, which runs git show on the index copy. A notebook outside the index returns no cells, and a folder outside a repository raises."
+			caption="The frontend has no git. A GET request reaches the staged route, which calls yukti.staged to run git show on the index copy. A notebook outside the index returns no cells, and a folder outside a repository raises."
 		paint: Steps 2 to 3 - pair the cells and paint
 			nodes=diff-plugin,paint-diff,align-cells
 			caption="alignCells pairs cells along their longest common subsequence. Changed cells get an orange outline, added cells green, and deleted cells become red rows. Edits repaint after 300 ms from the cells already read."

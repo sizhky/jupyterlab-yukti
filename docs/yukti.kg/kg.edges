@@ -1,63 +1,137 @@
-e1: frontend -> prefix-comm sends
+e1: frontend -> ask-socket sends
 	step=s1
 	message=async
-	note=notebook_prefix
-	description=The frontend sends one message holding the request id, the cells above %%ask without the hidden ones, and the AI Mode. It does not wait for a reply.
-	code=[plugin](../../yukti_frontend/src/index.ts){show=symbol symbol=plugin kind=Variable focus="match[.filter(widget => !isHidden(widget.model))] match[type: 'notebook_prefix',] match[mode: readMode(notebook.model)]" context=3}
-e2: ask-magic -> prefix-comm takes
+	status=proposed, pending user review
+	note=ask: path, source, cells, mode
+	description=runAsk opens one WebSocket at /yukti/ask and sends one message holding the notebook path, the %%ask source, the cells above it without the hidden ones, and the AI Mode. hostAskRuns patches CodeCell.execute, so the kernel never receives the cell.
+	code=[runAsk](../../yukti_frontend/src/index.ts){show=symbol symbol=runAsk kind=Function focus="match[new WebSocket(yuktiUrl('ask', true))] match[type: 'ask',] match[mode: readMode(notebook.model)]" context=2}
+e2: ask-socket -> turn runs
 	step=s2
-	pair=p-take
+	pair=p-turn
 	message=sync
-	note=take()
-	description=The cell starts and asks the comm for the request that is already waiting there.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[= self.prefixes.take()]" context=3}
-e3: prefix-comm -> ask-magic returns
-	step=s2
-	pair=p-take
-	note=request_id, cells, mode, comm
-	description=take() hands over the request and the comm handle, then forgets both. That same handle carries the answer traffic later in the turn.
-	code=[NotebookPrefixCache.take](../../yukti/comm.py){show=symbol symbol=NotebookPrefixCache.take kind=Method focus="match[request, self._request = self._request, None] match[comm, self._comm = self._comm, None]" context=2}
-e4: prefix-comm -> ask-magic returns
-	step=s2
-	fragment=break:no prefix
-	operand=[nothing was waiting]
-	operand_note=The cell ran with no notebook_prefix message in the comm, so there are no cells and no handle. take() raises, and the turn ends before any transcript is built.
-	note=RuntimeError
-	description=One guard covers an old frontend, a lost message and a re-run cell, because all three leave the comm empty.
-	code=[NotebookPrefixCache.take](../../yukti/comm.py){show=symbol symbol=NotebookPrefixCache.take kind=Method focus="match[if request is None or comm is None:] match[raise RuntimeError(]" context=2}
-e5: ask-magic -> app-server sends
+	status=proposed, pending user review
+	note=ask(source, cells, settings, folder, emit, run)
+	description=The socket reads the settings kept for this notebook path, then runs the turn in an executor thread so the server loop stays free. emit is the socket write, and run is the socket call that waits for a cell run.
+	code=[AskSocket.turn](../../yukti/server.py){show=symbol symbol=AskSocket.turn kind=Method focus="match[None, ask, str(data.get(]" context=3}
+e3: turn -> app-server sends
 	step=s3
 	pair=p-run
 	message=sync
-	note=run(build_transcript(cells, question))
-	description=build_transcript turns the cells and the question into one bounded string, and %%ask starts a Codex process with it. The transcript view shows how the two limits hold that string down.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[transcript = build_transcript(cells, cell)] match[with backend(root, settings) as server:]" context=2}
-e6: app-server -> ask-magic streams
+	status=proposed, pending user review
+	note=run(transcript, images)
+	description=build_transcript turns the cells and the question into one bounded string. The turn starts a backend process with it, inside a temporary directory. The transcript view shows how the two limits hold that string down.
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[transcript = build_transcript(cells, question)] match[answer = server.run(]" context=2}
+e4: app-server -> turn streams
 	step=s4
 	message=async
 	fragment=loop:every delta
 	operand=[until the turn ends]
 	operand_note=The server sends message text, tool calls and tool output as they happen. One tool item arrives twice, started then completed, so its block is updated in place.
 	note=answer delta
-	description=Deltas reach %%ask, not the cell. %%ask decides which block each one belongs to.
+	description=Deltas reach the turn, not the cell. The turn decides which block each one belongs to.
 	code=[AppServer.run](../../yukti/app_server.py){show=symbol symbol=AppServer.run kind=Method focus="match[on_delta(delta)] match[on_tool(params.get(]" context=2}
-e7: ask-magic -> frontend streams
+e5: turn -> ask-socket streams
 	step=s5
 	message=async
 	fragment=loop:every delta
 	operand=[until the turn ends]
-	note=display(Markdown)
-	description=Each delta updates its own block by display id, so growing prose stays in one output instead of repeating below itself.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[.update(Markdown(message.text))] match[Markdown(message.text), display_id=True]" context=2}
-e8: app-server -> ask-magic returns
+	status=proposed, pending user review
+	note=output: key, output
+	description=Each delta becomes one output message with a block key. The turn calls emit; it holds no connection. AskSocket.emit is that function.
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[emit(]" context=2}
+e6: ask-socket -> frontend streams
 	step=s5
+	message=async
+	fragment=loop:every delta
+	operand=[until the turn ends]
+	status=proposed, pending user review
+	note=output: key, output
+	description=emit may run on the executor thread, so it hands the message to the server loop. A closed socket drops the message. The frontend adds a new key as a new output and replaces a known key in place, so growing prose stays in one output.
+	code=[AskSocket.emit](../../yukti/server.py){show=symbol symbol=AskSocket.emit kind=Method focus="match[self.write_message(json.dumps(payload, default=str))]" context=3}
+e7: app-server -> turn returns
+	step=s6
 	pair=p-run
 	note=the turn is over
-	description=The with block exits and the Codex process stops. It lived for this one turn only.
+	description=The with block exits and the backend process stops. It lived for this one turn only.
 	code=[AppServer.__exit__](../../yukti/app_server.py){show=symbol symbol=AppServer.__exit__ kind=Method focus=all context=2}
-e9: ask-magic -> prefix-comm closes
+e8: turn -> ask-socket returns
+	step=s6
+	pair=p-turn
+	status=proposed, pending user review
+	note=ask returns
+	description=The executor call returns, and the socket sends done. The turn leaves its temporary directory and writes its trace before it returns.
+	code=[AskSocket.turn](../../yukti/server.py){show=symbol symbol=AskSocket.turn kind=Method focus="match[folder, self.emit, self.run]" context=3}
+e9: ask-socket -> frontend closes
 	step=s6
 	message=async
-	note=comm.close()
-	description=A finally block closes the comm, so the frontend learns the turn is over whether the answer streamed or an error stopped it.
-	code=[YuktiMagics.ask](../../yukti/ask.py){show=symbol symbol=YuktiMagics.ask kind=Method focus="match[finally:] match[comm.close()]" context=2}
+	status=proposed, pending user review
+	note=done, then close
+	description=A finally block closes the socket, so the frontend learns the turn is over whether the answer streamed or an error stopped it. The frontend ends the cell run when it reads done.
+	code=[AskSocket.turn](../../yukti/server.py){show=symbol symbol=AskSocket.turn kind=Method focus="match[self.loop.call_soon_threadsafe(self.close)]" context=3}
+e10: ask-socket -> frontend returns
+	step=s6
+	fragment=break:turn failed
+	operand=[ask raised]
+	operand_note=Any exception in the turn, such as a missing image or a bad option, becomes one error message. The frontend adds it to the cell as a kernel error would, so Run All stops there.
+	note=error: ename, evalue
+	status=proposed, pending user review
+	description=One except clause covers every failure, including a model refusal and an idle timeout.
+	code=[AskSocket.turn](../../yukti/server.py){show=symbol symbol=AskSocket.turn kind=Method focus="match[traceback.format_exception_only(type(error), error)]" context=3}
+e11: turn -> ask-socket runs
+	step=s7
+	pair=p-ran
+	message=sync
+	fragment=opt:the model calls run_cells
+	operand=[tool is run_cells]
+	operand_note=Other tools send their payload and need no reply. A run waits for the outputs, because the model reads them.
+	status=proposed, pending user review
+	note=run(cell_id, source)
+	description=For each named cell the turn passes the source it holds, with any replacement applied, and blocks on the answer. RUN_LIMIT stops a turn that keeps running cells.
+	code=[ask](../../yukti/turn.py){show=symbol symbol=ask kind=Function focus="match[outputs = run(]" context=3}
+e12: ask-socket -> frontend sends
+	step=s7
+	pair=p-ran-frontend
+	message=sync
+	fragment=opt:the model calls run_cells
+	operand=[tool is run_cells]
+	status=proposed, pending user review
+	note=run: cell_id, source
+	description=The socket keeps a Future for the cell_id and sends one run message. The executor thread waits on that Future.
+	code=[AskSocket.run](../../yukti/server.py){show=symbol symbol=AskSocket.run kind=Method focus="match[self.waiting[cell_id] = done] match[return done.result()]" context=2}
+e13: frontend -> notebook-kernel runs
+	step=s7
+	pair=p-kernel
+	message=sync
+	fragment=opt:the model calls run_cells
+	operand=[tool is run_cells]
+	status=proposed, pending user review
+	note=CodeCell.execute(cell)
+	description=runNamed runs the cell through the notebook's own session. The kernel is idle during the turn, so this is an ordinary run in the notebook language, with its outputs, its count and input().
+	code=[runNamed](../../yukti_frontend/src/index.ts){show=symbol symbol=runNamed kind=Function focus="match[await CodeCell.execute(target, panel.sessionContext)]" context=3}
+e14: notebook-kernel -> frontend returns
+	step=s7
+	pair=p-kernel
+	fragment=opt:the model calls run_cells
+	operand=[tool is run_cells]
+	status=proposed, pending user review
+	note=outputs of the cell
+	description=The outputs are in the cell model when the run ends, and the frontend reads them from there.
+	code=[runNamed](../../yukti_frontend/src/index.ts){show=symbol symbol=runNamed kind=Function focus="match[return target.model.outputs.toJSON();]" context=2}
+e15: frontend -> ask-socket returns
+	step=s7
+	pair=p-ran-frontend
+	fragment=opt:the model calls run_cells
+	operand=[tool is run_cells]
+	status=proposed, pending user review
+	note=ran: cell_id, outputs
+	description=The frontend sends the outputs over the same socket. on_message sets the Future, and the executor thread resumes.
+	code=[runAsk](../../yukti_frontend/src/index.ts){show=symbol symbol=runAsk kind=Function focus="match[type: 'ran',]" context=3}
+e16: ask-socket -> turn returns
+	step=s7
+	pair=p-ran
+	fragment=opt:the model calls run_cells
+	operand=[tool is run_cells]
+	status=proposed, pending user review
+	note=outputs
+	description=said turns the outputs into text for the model, cut to 8 KB. A closed socket raises Closed in the waiting thread, which ends the turn.
+	code=[AskSocket.on_message](../../yukti/server.py){show=symbol symbol=AskSocket.on_message kind=Method focus="match[.set_result(outputs if]" context=3}

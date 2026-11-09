@@ -37,6 +37,7 @@ import {
   type NotebookPanel
 } from '@jupyterlab/notebook';
 import { INotebookTree } from '@jupyter-notebook/tree';
+import { ServerConnection } from '@jupyterlab/services';
 import { IDefaultFileBrowser } from '@jupyterlab/filebrowser';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 import { Widget } from '@lumino/widgets';
@@ -47,7 +48,6 @@ import { IEditorLanguageRegistry } from '@jupyterlab/codemirror';
 import { highlightTree } from '@lezer/highlight';
 import type { Tag } from '@lezer/highlight';
 
-const COMM_TARGET = 'yukti.notebook_prefix';
 const PLAIN_MIME_TYPE = 'text/plain';
 const ASK_CLASS = 'yukti-ask-cell';
 const FROZEN_CLASS = 'yukti-frozen-cell';
@@ -314,67 +314,10 @@ function serializeCell(cellId: string, cell: ICell): SerializedCell {
 }
 
 /**
- * Find a cell by the id the kernel minted for it.
- *
- * ``insert_cells`` carries that id, and ``createCell`` in ``@jupyter/ydoc``
- * adopts it, so both sides name the same cell without the frontend answering
- * a comm the kernel cannot read while it is busy with the ``%%ask`` cell.
- *
- * The caller passes only the cells Yukti inserted in this turn, so a run never
- * reaches a cell the reader wrote, above or below the question.
- */
-function findCell(cells: readonly Cell[], cellId: unknown): Cell | null {
-  if (typeof cellId !== 'string') {
-    return null;
-  }
-  return cells.find(widget => widget.model.id === cellId) ?? null;
-}
-
-/**
- * Show that the kernel is inside this cell.
- *
- * The prompt is the only sign a reader gets, because the run belongs to the
- * ``%%ask`` cell's ``execute_request`` and this cell has none of its own.
- */
-function markRunning(cell: Cell): void {
-  if (cell.model.type !== 'code') {
-    return;
-  }
-  (cell.model as ICodeCellModel).outputs.clear();
-  (cell as CodeCell).setPrompt('*');
-}
-
-/**
- * Paint one run's outputs into the cell that holds the source.
- *
- * The outputs are nbformat, so an image, a figure and a traceback all render
- * the way JupyterLab renders them for an ordinary run. The execution count is
- * the one the ``%%ask`` cell is using, because that is the request this run
- * happened inside.
- *
- * Pro: the reader sees the output under the code, not in the question.
- * Con: two cells then show the same count.
- */
-function showRun(cell: Cell, outputs: unknown, count: unknown): void {
-  if (cell.model.type !== 'code' || !Array.isArray(outputs)) {
-    return;
-  }
-  const model = cell.model as ICodeCellModel;
-  model.outputs.clear();
-  outputs.forEach(value => {
-    const output = value as Record<string, unknown> | null;
-    if (output != null && typeof output.output_type === 'string') {
-      model.outputs.add(output as unknown as IOutput);
-    }
-  });
-  model.executionCount = typeof count === 'number' ? count : null;
-}
-
-/**
  * The two voices ``AI Mode`` switches between, and the metadata key that
  * remembers which one this notebook asked for.
  *
- * The kernel holds the prompt each name stands for, so a new mode is one
+ * The server holds the prompt each name stands for, so a new mode is one
  * entry here and one entry in ``MODES`` of ``app_server.py``.
  */
 const MODES = [
@@ -401,7 +344,7 @@ const MODE_STYLE = `
  * Read the mode one notebook asked for, and fall back to the first one.
  *
  * A file the reader edited by hand can name anything, so the name is checked
- * here as well as in the kernel.
+ * here as well as on the server.
  */
 function readMode(model: INotebookModel | null): string {
   const value = model?.getMetadata(MODE_KEY);
@@ -478,164 +421,261 @@ const aiModePlugin: JupyterFrontEndPlugin<void> = {
   }
 };
 
-const plugin: JupyterFrontEndPlugin<void> = {
-  id: 'yukti:notebook-prefix',
-  autoStart: true,
-  requires: [INotebookTracker],
-  activate: (_app, tracker: INotebookTracker) => {
-    NotebookActions.executionScheduled.connect((_sender, { cell, notebook }) => {
-      const source = text(cell.model.toJSON().source);
-      if (!isAskSource(source) || isFrozen(cell.model)) {
-        return;
-      }
+/** The reply ``CodeCell.execute`` resolves to; ``undefined`` reads as a clean run. */
+type Reply = Awaited<ReturnType<typeof CodeCell.execute>>;
 
-      // A rerun shows no usage until its own turn reports one.
-      cell.model.deleteMetadata(USAGE_KEY);
-      const index = notebook.widgets.indexOf(cell);
-      const panel = tracker.find(candidate => candidate.content === notebook);
-      const kernel = panel?.sessionContext.session?.kernel;
-      if (index < 0 || kernel == null) {
-        return;
-      }
+/** What one turn remembers between messages: the cells it inserted. */
+type Turn = { inserted: Set<string>; last?: string };
 
-      // A hidden cell drops out here, which is the one place the prompt is
-      // built, so Codex reads neither its source nor its outputs and cannot
-      // name it in a ``replace_cells`` call either.
-      const cells = notebook.widgets
-        .slice(0, index)
-        .filter(widget => !isHidden(widget.model))
-        .map(widget => serializeCell(widget.model.id, widget.model.toJSON()));
-      const requestId = `${cell.model.id}:${Date.now()}`;
-      const comm = kernel.createComm(COMM_TARGET);
-      let lastInsertedCellId: string | undefined;
-      const insertedCellIds = new Set<string>();
-      comm.onMsg = message => {
-        const data = message.content.data;
-        if (
-          data.request_id !== requestId ||
-          notebook.model == null
-        ) {
-          return;
-        }
+/**
+ * Add the error to the cell and build the reply that stops a run of cells.
+ *
+ * The cell executor throws a ``KernelError`` on a reply that is not ``ok``, so
+ * Run All stops at a failed question the way it stops at a failed cell.
+ */
+function failed(cell: CodeCell, ename: string, evalue: string, traceback: string[]): Reply {
+  cell.model.outputs.add({ output_type: 'error', ename, evalue, traceback });
+  return { content: { status: 'error', ename, evalue, traceback } } as unknown as Reply;
+}
 
-        const currentIndex = notebook.widgets.indexOf(cell);
-        if (currentIndex < 0) {
-          return;
-        }
-        if (data.type === 'usage') {
-          const { type: _type, request_id: _id, ...usage } = data;
-          cell.model.setMetadata(USAGE_KEY, usage);
-          return;
-        }
-        if (data.type === 'insert_cells' && Array.isArray(data.cells)) {
-          const inserted = data.cells.map(value => {
-            if (typeof value !== 'object' || value == null || Array.isArray(value)) {
-              return null;
-            }
-            const candidate = value as Record<string, unknown>;
-            const cellType = candidate.cell_type;
-            return (
-              (cellType === 'code' || cellType === 'markdown') &&
-              typeof candidate.source === 'string' &&
-              typeof candidate.cell_id === 'string' &&
-              ['string', 'undefined'].includes(typeof candidate.after_cell_id)
-            ) ? {
-              after: candidate.after_cell_id as string | undefined,
-              cell: {
-                id: candidate.cell_id,
-                cell_type: cellType,
-                source: candidate.source,
-                metadata: cellType === 'code' ? { trusted: false } : {}
-              }
-            } : null;
-          });
-          if (inserted.length === 0 || inserted.some(cell => cell == null)) {
-            return;
-          }
-          // An anchor the notebook no longer holds drops the whole call, as
-          // any other malformed cell does.
-          const shared = notebook.model.sharedModel;
-          const anchorIndex = (id: string | undefined) => id == null
-            ? -1
-            : shared.cells.findIndex(sharedCell => sharedCell.id === id);
-          if (inserted.some(item => item!.after != null && anchorIndex(item!.after) < 0)) {
-            return;
-          }
-          // One transaction per cell: ``sharedModel.cells`` updates when a
-          // transaction ends, and the next cell's index is read from it.
-          inserted.forEach(item => {
-            const previousIndex = anchorIndex(item!.after ?? lastInsertedCellId);
-            const insertionIndex = previousIndex < 0
-              ? anchorIndex(cell.model.id) + 1
-              : previousIndex + 1;
-            shared.insertCells(insertionIndex, [item!.cell]);
-            lastInsertedCellId = item!.cell.id;
-            insertedCellIds.add(item!.cell.id);
-          });
-          notebook.activeCellIndex = anchorIndex(lastInsertedCellId);
-          return;
-        }
-        // The cells this turn inserted, wherever they landed, so a run never
-        // reaches a cell of the reader's own.
-        const insertedCells = notebook.widgets.filter(
-          widget => insertedCellIds.has(widget.model.id)
-        );
-        if (data.type === 'run_cells' && Array.isArray(data.cells)) {
-          data.cells.forEach(value => {
-            const named = value as Record<string, unknown> | null;
-            const cell = findCell(insertedCells, named?.cell_id);
-            if (cell != null) {
-              markRunning(cell);
-            }
-          });
-          return;
-        }
-        if (data.type === 'cell_output') {
-          const cell = findCell(insertedCells, data.cell_id);
-          if (cell != null) {
-            showRun(cell, data.outputs, data.execution_count);
-          }
-          return;
-        }
-        if (data.type !== 'replace_cells' || !Array.isArray(data.cells)) {
-          return;
-        }
-
-        // Every cell but the question: the cells above it are the transcript
-        // Codex read, and the inserted cells, above or below it, are the ones
-        // it rewrites when a run of one of them fails.
-        const editable = new Map(
-          notebook.widgets
-            .filter((_widget, index) => index !== currentIndex)
-            .map(widget => [widget.model.id, widget])
-        );
-        const edits = data.cells.map(value => {
-          if (typeof value !== 'object' || value == null || Array.isArray(value)) {
-            return null;
-          }
-          const replacement = value as Record<string, unknown>;
-          const widget = editable.get(replacement.cell_id as string);
-          return typeof replacement.source === 'string' && widget != null
-            ? { widget, source: replacement.source }
-            : null;
-        });
-        if (edits.length === 0 || edits.some(edit => edit == null)) {
-          return;
-        }
-        notebook.model.sharedModel.transact(() => {
-          edits.forEach(edit => edit!.widget.model.sharedModel.setSource(edit!.source));
-        });
-        notebook.activeCellIndex = notebook.widgets.indexOf(edits[0]!.widget);
-      };
-      comm.open({
-        type: 'notebook_prefix',
-        request_id: requestId,
-        cells,
-        mode: readMode(notebook.model)
-      });
-    });
+/**
+ * Insert the cells one ``insert_cells`` call names, each after its anchor.
+ *
+ * One transaction per cell: ``sharedModel.cells`` updates when a transaction
+ * ends, and the next cell's index is read from it. An anchor the notebook no
+ * longer holds drops the whole call, as any other malformed cell does.
+ */
+function insertCells(notebook: Notebook, cell: Cell, data: Record<string, unknown>, turn: Turn): void {
+  if (notebook.model == null || !Array.isArray(data.cells)) {
+    return;
   }
-};
+  const inserted = data.cells.map(value => {
+    const candidate = (value ?? {}) as Record<string, unknown>;
+    const cellType = candidate.cell_type;
+    return (
+      (cellType === 'code' || cellType === 'markdown') &&
+      typeof candidate.source === 'string' &&
+      typeof candidate.cell_id === 'string' &&
+      ['string', 'undefined'].includes(typeof candidate.after_cell_id)
+    ) ? {
+      after: candidate.after_cell_id as string | undefined,
+      cell: {
+        id: candidate.cell_id,
+        cell_type: cellType,
+        source: candidate.source,
+        metadata: cellType === 'code' ? { trusted: false } : {}
+      }
+    } : null;
+  });
+  const shared = notebook.model.sharedModel;
+  const anchorIndex = (id: string | undefined) => id == null
+    ? -1
+    : shared.cells.findIndex(sharedCell => sharedCell.id === id);
+  if (
+    inserted.length === 0 ||
+    inserted.some(item => item == null || (item.after != null && anchorIndex(item.after) < 0))
+  ) {
+    return;
+  }
+  inserted.forEach(item => {
+    const previousIndex = anchorIndex(item!.after ?? turn.last);
+    const insertionIndex = previousIndex < 0 ? anchorIndex(cell.model.id) + 1 : previousIndex + 1;
+    shared.insertCells(insertionIndex, [item!.cell]);
+    turn.last = item!.cell.id;
+    turn.inserted.add(item!.cell.id);
+  });
+  notebook.activeCellIndex = anchorIndex(turn.last);
+}
+
+/**
+ * Rewrite the cells one ``replace_cells`` call names, in one transaction.
+ *
+ * Every cell but the question may change: the cells above it are the
+ * transcript the model read, and the inserted cells are the ones it fixes.
+ */
+function replaceCells(notebook: Notebook, cell: Cell, data: Record<string, unknown>): void {
+  if (notebook.model == null || !Array.isArray(data.cells)) {
+    return;
+  }
+  const editable = new Map(
+    notebook.widgets.filter(widget => widget !== cell).map(widget => [widget.model.id, widget])
+  );
+  const edits = data.cells.map(value => {
+    const replacement = (value ?? {}) as Record<string, unknown>;
+    const widget = editable.get(replacement.cell_id as string);
+    return typeof replacement.source === 'string' && widget != null
+      ? { widget, source: replacement.source }
+      : null;
+  });
+  if (edits.length === 0 || edits.some(edit => edit == null)) {
+    return;
+  }
+  notebook.model.sharedModel.transact(() => {
+    edits.forEach(edit => edit!.widget.model.sharedModel.setSource(edit!.source));
+  });
+  notebook.activeCellIndex = notebook.widgets.indexOf(edits[0]!.widget);
+}
+
+/**
+ * Run one cell the model named through the notebook's own kernel.
+ *
+ * The question holds no ``execute_request``, so the kernel is idle and this is
+ * an ordinary run in the notebook's language: the outputs, the count and
+ * ``input()`` all behave as they do for a cell the reader runs.
+ */
+async function runNamed(panel: NotebookPanel, cellId: unknown): Promise<unknown[]> {
+  const target = panel.content.widgets.find(widget => widget.model.id === cellId);
+  if (!(target instanceof CodeCell)) {
+    return [];
+  }
+  await CodeCell.execute(target, panel.sessionContext);
+  return target.model.outputs.toJSON();
+}
+
+/**
+ * The URL of one Yukti route on the Jupyter server.
+ *
+ * A browser WebSocket sends no headers, so the token rides in the URL when the
+ * server settings ask for that, as the kernel WebSocket does.
+ */
+function yuktiUrl(route: string, socket = false): string {
+  const settings = ServerConnection.makeSettings();
+  const url = URLExt.join(socket ? settings.wsUrl : settings.baseUrl, 'yukti', route);
+  return socket && settings.appendToken && settings.token
+    ? `${url}?token=${encodeURIComponent(settings.token)}`
+    : url;
+}
+
+/**
+ * Run one ``%%ask`` cell through the Jupyter server instead of the kernel.
+ *
+ * The cells above the question, without the hidden ones, open one WebSocket
+ * turn. Each ``output`` message carries a key, so a message block that grows
+ * and a tool call that completes update their output in place.
+ */
+async function runAsk(cell: CodeCell, panel: NotebookPanel): Promise<Reply> {
+  const notebook = panel.content;
+  const model = cell.model;
+  const index = notebook.widgets.indexOf(cell);
+  const cells = notebook.widgets
+    .slice(0, index)
+    .filter(widget => !isHidden(widget.model))
+    .map(widget => serializeCell(widget.model.id, widget.model.toJSON()));
+  model.deleteMetadata(USAGE_KEY);
+  model.outputs.clear();
+  cell.setPrompt('*');
+  const started = new Date().toISOString();
+  const keys = new Map<string, number>();
+  const turn: Turn = { inserted: new Set() };
+  const socket = new WebSocket(yuktiUrl('ask', true));
+  const reply = await new Promise<Reply>(resolve => {
+    let ended = false;
+    const end = (make: () => Reply) => {
+      if (!ended) {
+        ended = true;
+        resolve(make());
+        socket.close();
+      }
+    };
+    socket.onopen = () => socket.send(JSON.stringify({
+      type: 'ask',
+      path: panel.context.path,
+      source: model.sharedModel.getSource(),
+      cells,
+      mode: readMode(notebook.model)
+    }));
+    socket.onclose = () => end(() => failed(
+      cell, 'ConnectionError',
+      'The Jupyter server closed the turn. Check that the yukti server extension is enabled.', []
+    ));
+    socket.onmessage = event => {
+      const data = JSON.parse(event.data) as Record<string, any>;
+      if (data.type === 'output') {
+        const at = keys.get(data.key);
+        if (at == null) {
+          keys.set(data.key, model.outputs.length);
+          model.outputs.add(data.output);
+        } else {
+          model.outputs.set(at, data.output);
+        }
+      } else if (data.type === 'usage') {
+        const { type: _type, ...usage } = data;
+        model.setMetadata(USAGE_KEY, usage);
+      } else if (data.type === 'insert_cells') {
+        insertCells(notebook, cell, data, turn);
+      } else if (data.type === 'replace_cells') {
+        replaceCells(notebook, cell, data);
+      } else if (data.type === 'run') {
+        void runNamed(panel, data.cell_id).then(outputs => {
+          socket.send(JSON.stringify({ type: 'ran', cell_id: data.cell_id, outputs }));
+        });
+      } else if (data.type === 'done') {
+        end(() => undefined);
+      } else if (data.type === 'error') {
+        end(() => failed(cell, data.ename, data.evalue, data.traceback ?? []));
+      }
+    };
+  });
+  model.setMetadata('execution', {
+    'shell.execute_reply.started': started,
+    'shell.execute_reply': new Date().toISOString()
+  });
+  cell.setPrompt('');
+  return reply;
+}
+
+/**
+ * Apply one ``%%yukti`` cell on the Jupyter server, which keeps the settings
+ * of every notebook it serves until it stops.
+ */
+async function runYukti(cell: CodeCell, panel: NotebookPanel): Promise<Reply> {
+  cell.model.outputs.clear();
+  const settings = ServerConnection.makeSettings();
+  const response = await ServerConnection.makeRequest(yuktiUrl('settings'), {
+    method: 'POST',
+    body: JSON.stringify({ path: panel.context.path, source: cell.model.sharedModel.getSource() })
+  }, settings);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return failed(cell, 'UsageError', body.message ?? response.statusText, []);
+  }
+  cell.model.outputs.add({
+    output_type: 'display_data',
+    data: { 'text/markdown': body.markdown },
+    metadata: {}
+  });
+  return undefined;
+}
+
+function isYuktiSource(source: string): boolean {
+  return /^%%?yukti\b/.test(source.trimStart());
+}
+
+/**
+ * Send ``%%ask`` and ``%%yukti`` cells to the Jupyter server, never the kernel.
+ *
+ * ``CodeCell.execute`` is the one call every run path ends at, so the kernel
+ * of any language never receives either cell, and the cell executor still
+ * emits ``executed`` for the notification and the footer.
+ */
+function hostAskRuns(tracker: INotebookTracker): void {
+  const cells = CodeCell as unknown as Record<string, unknown>;
+  const execute = cells.execute as Execute | undefined;
+  if (typeof execute !== 'function') {
+    return;
+  }
+  cells.execute = (cell: CodeCell, ...rest: unknown[]) => {
+    const source = cell.model.sharedModel.getSource();
+    const panel = tracker.find(candidate => candidate.content.widgets.includes(cell));
+    if (panel != null && isAskSource(source)) {
+      return runAsk(cell, panel);
+    }
+    if (panel != null && isYuktiSource(source)) {
+      return runYukti(cell, panel);
+    }
+    return (execute as (...args: unknown[]) => unknown)(cell, ...rest);
+  };
+}
 
 /**
  * Show every ``%%ask`` cell as a question: no Python highlighting, and the
@@ -848,8 +888,11 @@ function blockFrozenRuns(): void {
 const skipAskPlugin: JupyterFrontEndPlugin<void> = {
   id: 'yukti:skip-ask-on-run-all',
   autoStart: true,
-  activate: () => {
+  requires: [INotebookTracker],
+  activate: (_app, tracker: INotebookTracker) => {
     skipAskOnBulkRun();
+    // The frozen guard wraps the server route, so a frozen question stays put.
+    hostAskRuns(tracker);
     blockFrozenRuns();
   }
 };
@@ -2142,35 +2185,21 @@ function alignCells(
 }
 
 /**
- * Ask the kernel for the staged copy of this notebook.
+ * Ask the Jupyter server for the staged copy of this notebook.
  *
- * The frontend has no git of its own, and ``user_expressions`` reaches the
- * kernel without ``%load_ext yukti`` and without an entry in the history.
+ * The frontend has no git of its own, and the server reads it for a notebook
+ * on any kernel, or on none.
  */
 async function fetchStaged(panel: NotebookPanel, rev: string): Promise<StagedCell[]> {
-  const kernel = panel.sessionContext.session?.kernel;
-  if (kernel == null) {
-    throw new Error('The diff reads git through the kernel. Start a kernel first.');
+  const query = `?path=${encodeURIComponent(panel.context.path)}&rev=${encodeURIComponent(rev)}`;
+  const response = await ServerConnection.makeRequest(
+    yuktiUrl('staged') + query, {}, ServerConnection.makeSettings()
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.message ?? response.statusText);
   }
-  // Jupyter Notebook 7 sets no ``serverRoot``. Its kernel starts in the
-  // notebook's folder, so the bare name resolves there.
-  const root = PageConfig.getOption('serverRoot');
-  const path = root
-    ? `${root}/${panel.context.path}`
-    : PathExt.basename(panel.context.path);
-  const reply = await kernel.requestExecute({
-    code: '',
-    silent: true,
-    store_history: false,
-    user_expressions: {
-      staged: `__import__('yukti.staged').staged.staged_json(${JSON.stringify(path)}, ${JSON.stringify(rev)})`
-    }
-  }).done;
-  const result = (reply.content as any).user_expressions?.staged;
-  if (result?.status !== 'ok') {
-    throw new Error(`${result?.ename ?? 'Error'}: ${result?.evalue ?? 'no reply'}`);
-  }
-  return result.data['application/json'] as StagedCell[];
+  return body as StagedCell[];
 }
 
 type EditorFactory = IEditorServices['factoryService'];
@@ -2911,7 +2940,6 @@ const diskWatchPlugin: JupyterFrontEndPlugin<void> = {
 };
 
 export default [
-  plugin,
   diskWatchPlugin,
   footerPlugin,
   diffPlugin,

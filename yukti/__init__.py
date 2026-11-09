@@ -17,10 +17,18 @@ except PackageNotFoundError:
     __version__ = '0.0.0.dev0'
 
 def load_ipython_extension(ipython: InteractiveShell):
-    from .ask import YuktiMagics
-
-    ipython.register_magics(YuktiMagics)
+    """Keep ``%load_ext yukti`` cells working; the Jupyter server now hosts ``%%ask``."""
 
 
 def unload_ipython_extension(ipython: InteractiveShell):
     pass
+
+
+def _jupyter_server_extension_points():
+    return [{"module": "yukti"}]
+
+
+def _load_jupyter_server_extension(server_app):
+    from .server import setup_handlers
+
+    setup_handlers(server_app.web_app)

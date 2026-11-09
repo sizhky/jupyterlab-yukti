@@ -168,7 +168,7 @@ $(STAMPS)/install: pyproject.toml
 $(STAMPS)/kernel: $(wildcard yukti/*.py)
 	@mkdir -p $(STAMPS)
 	@touch $@
-	@echo 'dev: backend changed; restart the kernel'
+	@echo 'dev: backend changed; restart the Jupyter server'
 
 watch:  ## run `make dev` every 2 seconds until Ctrl+C
 	@while :; do $(SUB) -s dev; sleep 2; done

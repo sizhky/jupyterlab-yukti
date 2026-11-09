@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 name = "jupyterlab-yukti"
 version = "0.0.15"
 readme = "README.md"
-description = "Ask Codex about the visible prefix of a Jupyter notebook"
+description = "Ask Codex about the visible prefix of a Jupyter notebook, on any kernel"
 authors = [{ name = "Yeshwanth Sizhky" }]
 keywords = ["ipython", "jupyterlab", "codex", "notebook"]
 license = { file = "LICENSE" }
@@ -53,6 +53,7 @@ packages = ["yukti"]
 "yukti_frontend/labextension/static" = "share/jupyter/labextensions/yukti/static"
 "yukti_frontend/labextension/schemas" = "share/jupyter/labextensions/yukti/schemas"
 "yukti_frontend/install.json" = "share/jupyter/labextensions/yukti/install.json"
+"jupyter-config/jupyter_server_config.d/yukti.json" = "etc/jupyter/jupyter_server_config.d/yukti.json"
 
 [tool.hatch.build.hooks.jupyter-builder]
 dependencies = ["hatch-jupyter-builder>=0.9"]
