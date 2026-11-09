@@ -47,7 +47,11 @@ artifacts = ["yukti_frontend/labextension"]
 packages = ["yukti"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"yukti_frontend/labextension" = "share/jupyter/labextensions/yukti"
+# Each build output is listed on its own, so an `install.json` that an editable
+# install writes through the `make dev` symlink is never packed a second time.
+"yukti_frontend/labextension/package.json" = "share/jupyter/labextensions/yukti/package.json"
+"yukti_frontend/labextension/static" = "share/jupyter/labextensions/yukti/static"
+"yukti_frontend/labextension/schemas" = "share/jupyter/labextensions/yukti/schemas"
 "yukti_frontend/install.json" = "share/jupyter/labextensions/yukti/install.json"
 
 [tool.hatch.build.hooks.jupyter-builder]
