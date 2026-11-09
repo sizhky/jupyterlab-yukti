@@ -44,11 +44,19 @@ def test_runs_a_code_cell_yukti_inserted():
     assert payload == {"type": "run_cells", "cells": [{"cell_id": "new"}]}
 
 
-def test_refuses_to_run_a_cell_yukti_did_not_insert():
-    """A cell of the user's own may hold anything, so the agent runs only what
-    it wrote in this turn."""
-    with pytest.raises(RuntimeError, match="theirs"):
-        tool_payload("run_cells", {"cells": [{"cell_id": "theirs"}]}, [{"cell_id": "theirs"}], [CODE])
+def test_runs_a_code_cell_of_the_users_own():
+    """A test the agent fixed with replace_cells is the user's cell, and the
+    agent must run it to see that the fix works."""
+    theirs = {"cell_id": "theirs", "cell_type": "code", "source": "assert 1"}
+
+    payload = tool_payload("run_cells", {"cells": [{"cell_id": "theirs"}]}, [theirs], [theirs, CODE])
+
+    assert payload["cells"] == [{"cell_id": "theirs"}]
+
+
+def test_refuses_to_run_a_cell_the_turn_does_not_hold():
+    with pytest.raises(RuntimeError, match="gone"):
+        tool_payload("run_cells", {"cells": [{"cell_id": "gone"}]}, [], [CODE])
 
 
 def test_refuses_to_run_a_markdown_cell():

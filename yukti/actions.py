@@ -107,9 +107,9 @@ TOOL_SPECS = [
         "type": "function",
         "name": RUN_CELLS,
         "description": (
-            "Run code cells you inserted in this turn, in the user's kernel, "
-            "and read what they printed. The notebook shows the run in the "
-            "cell itself. Use a cell_id an insert_cells call returned."
+            "Run code cells in the user's kernel and read what they printed. "
+            "The notebook shows the run in the cell itself. Use a cell_id an "
+            "insert_cells call returned or a code cell_id from the transcript."
         ),
         "inputSchema": _cells_schema({"cell_id": {"type": "string"}}, ["cell_id"]),
     },
@@ -166,18 +166,18 @@ def _written(arguments: Any) -> list:
     return cells
 
 
-def _runnable(inserted: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    """The source of every code cell Yukti inserted, by cell_id."""
+def _runnable(held: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The source of every code cell this turn holds, by cell_id."""
     return {
         cell["cell_id"]: cell["source"]
-        for cell in inserted
+        for cell in held
         if cell.get("cell_type") == "code" and isinstance(cell.get("cell_id"), str)
     }
 
 
-def _run(written: list, inserted: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+def _run(written: list, held: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
     """Check the cell_ids one ``run_cells`` call names."""
-    runnable = _runnable(inserted)
+    runnable = _runnable(held)
     ids = []
     for item in written:
         if not (
@@ -190,7 +190,7 @@ def _run(written: list, inserted: Sequence[Mapping[str, Any]]) -> list[dict[str,
         if cell_id not in runnable:
             raise RuntimeError(
                 f"{INVALID}: no code cell_id {cell_id} to run; run only a code "
-                "cell an insert_cells call returned in this turn"
+                "cell from the transcript or one an insert_cells call returned"
             )
         if runnable[cell_id].lstrip().startswith(ASKING):
             raise RuntimeError(
@@ -207,15 +207,15 @@ def tool_payload(
     tool: str,
     arguments: Any,
     cells: Sequence[Mapping[str, Any]],
-    inserted: Sequence[Mapping[str, Any]] = (),
+    held: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Validate one tool call and return the message the notebook receives.
 
-    ``cells`` is the notebook prefix, and ``inserted`` holds the cells Yukti
-    added in this turn. ``replace_cells`` may name a cell_id from either, so a
-    cell that failed its run can be rewritten and run again. ``run_cells`` may
-    only name one Yukti inserted, so the agent runs what it wrote and never
-    re-runs a cell of the user's own.
+    ``cells`` is the notebook prefix, and ``held`` holds every cell this turn
+    can name with the source the notebook now holds: the prefix cells, with
+    any replacement applied, and the cells Yukti inserted. ``replace_cells``
+    and ``run_cells`` may name a cell_id from either, so a cell that failed
+    its run, the user's own or Yukti's, can be rewritten and run again.
 
     Every failure raises ``RuntimeError`` with a sentence the model can act
     on, because the caller sends it back as the tool result.
@@ -256,11 +256,11 @@ def tool_payload(
     written = _written(arguments)
 
     if tool == RUN_CELLS:
-        return {"type": tool, "cells": _run(written, inserted)}
+        return {"type": tool, "cells": _run(written, held)}
 
     allowed = {
         cell["cell_id"]
-        for cell in [*cells, *inserted]
+        for cell in [*cells, *held]
         if isinstance(cell.get("cell_id"), str)
     }
 

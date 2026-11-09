@@ -40,7 +40,9 @@ Use transcript cell_id values for replace_cells."""
 RUN_RULES = """
 Every insert_cells call returns the cell_id the notebook gave the cell. Call
 run_cells with that cell_id when the answer depends on what the code prints, or
-when you must see that the code works. The result is what the cell printed, and
+when you must see that the code works. run_cells also runs a code cell from the
+transcript, such as a test you fixed with replace_cells; run one only when the
+answer depends on its output, and run the cells it depends on first. The result is what the cell printed, and
 the notebook shows the same run in the cell itself, so never paste the output
 into another cell and never claim an output you did not read. If the run fails,
 call replace_cells with the same cell_id to fix that cell, then run it again;

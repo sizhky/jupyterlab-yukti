@@ -249,11 +249,15 @@ class YuktiMagics(Magics):
                     trace.write("notebook_send", payload)
                     comm.send({**payload, "request_id": request_id})
 
-                # The cells Yukti inserted in this turn, by the cell_id the
-                # notebook adopted. The kernel mints that id, so it can name a
-                # cell it created without an answer from a frontend that never
-                # answers.
-                inserted: dict[str, Any] = {}
+                # Every cell this turn can run, by cell_id, with the source the
+                # notebook now holds: the prefix, then Yukti's inserts. The
+                # kernel mints an insert's id, so it can name a cell it created
+                # without an answer from a frontend that never answers.
+                held: dict[str, Any] = {
+                    cell["cell_id"]: dict(cell)
+                    for cell in cells
+                    if isinstance(cell.get("cell_id"), str)
+                }
                 runs = 0
 
                 def allow_run(count: int) -> None:
@@ -290,7 +294,7 @@ class YuktiMagics(Magics):
                     for item in named:
                         cell_id = item["cell_id"]
                         outputs, printed = run_source(
-                            self.shell, inserted[cell_id]["source"]
+                            self.shell, held[cell_id]["source"]
                         )
                         send(
                             {
@@ -316,7 +320,7 @@ class YuktiMagics(Magics):
                     the only handle ``run_cells`` accepts.
                     """
                     payload = tool_payload(
-                        tool, arguments, cells, list(inserted.values())
+                        tool, arguments, cells, list(held.values())
                     )
                     if payload["type"] == RUN_CELLS:
                         allow_run(len(payload["cells"]))
@@ -331,15 +335,14 @@ class YuktiMagics(Magics):
                         result = f"{result}\n{run_named(payload['cells'])}"
                     elif payload["type"] == INSERT_CELLS:
                         for cell in payload["cells"]:
-                            inserted[cell["cell_id"]] = cell
+                            held[cell["cell_id"]] = cell
                         ids = ", ".join(cell["cell_id"] for cell in payload["cells"])
                         result = f"{result}, cell_id {ids}"
                     else:
                         # A rewritten cell keeps its cell_id, so the next run of
                         # that id must run the source the notebook now holds.
                         for cell in payload["cells"]:
-                            if cell["cell_id"] in inserted:
-                                inserted[cell["cell_id"]]["source"] = cell["source"]
+                            held[cell["cell_id"]]["source"] = cell["source"]
                     # The answer closes the call, so this line is where a
                     # reader of the trace sees Yukti's own share of the turn end.
                     trace.write("tool_result", {"line": line, "text": result})
