@@ -1734,6 +1734,14 @@ const BOOKMARK_STYLE = `
   padding: 4px 8px;
   text-align: left;
 }
+.yukti-Bookmark button.yukti-Bookmark-open:disabled {
+  color: var(--jp-ui-font-color3);
+  cursor: default;
+}
+.yukti-Bookmark-open:disabled .yukti-Bookmark-icon,
+.yukti-Bookmark-open:disabled .yukti-Bookmark-dir {
+  opacity: 0.5;
+}
 .yukti-Bookmark-icon {
   display: flex;
   flex: 0 0 auto;
@@ -1800,6 +1808,9 @@ const STARS = { on: starIcon(true), off: starIcon(false) };
  * path that is no longer a directory. So the same one character carries the
  * type here and gets checked there, and the setting stays a list of plain
  * strings a reader can edit by hand.
+ *
+ * A stored path is absolute, so the same list serves every server root. An
+ * older path without a leading slash is relative to the root and still opens.
  */
 function bookmarkParts(path: string): {
   name: string;
@@ -1821,10 +1832,33 @@ function bookmarkParts(path: string): {
 }
 
 /**
+ * The path under ``root`` that ``filebrowser:open-path`` takes, or ``null``
+ * when the stored path lies outside this server's root.
+ *
+ * >>> underRoot('/home/me/code/a.ipynb', '/home/me')  // 'code/a.ipynb'
+ * >>> underRoot('/home/me/', '/home/me')              // '/'
+ * >>> underRoot('/srv/b.ipynb', '/home/me')           // null
+ * >>> underRoot('code/a.ipynb', '/home/me')           // 'code/a.ipynb'
+ */
+function underRoot(path: string, root: string): string | null {
+  if (!path.startsWith('/')) {
+    return path;
+  }
+  if (!path.startsWith(`${root}/`)) {
+    return null;
+  }
+  return path.slice(root.length + 1) || '/';
+}
+
+/**
  * One bookmark: a wide button that opens it, and a narrow one that drops it.
+ *
+ * ``reach`` is the path under this server's root. A row with no ``reach``
+ * stays in the list but its open button is disabled.
  */
 function bookmarkRow(
   path: string,
+  reach: string | null,
   open: (path: string) => void,
   drop: (path: string) => void
 ): HTMLLIElement {
@@ -1834,7 +1868,8 @@ function bookmarkRow(
 
   const go = document.createElement('button');
   go.className = 'yukti-Bookmark-open';
-  go.title = path;
+  go.title = reach == null ? `${path} is outside this server's root` : path;
+  go.disabled = reach == null;
   const glyph = document.createElement('span');
   glyph.className = 'yukti-Bookmark-icon';
   icon.element({ container: glyph, width: '16px', height: '16px' });
@@ -1845,7 +1880,11 @@ function bookmarkRow(
   parent.className = 'yukti-Bookmark-dir';
   parent.textContent = dir;
   go.append(glyph, label, parent);
-  go.addEventListener('click', () => open(path));
+  go.addEventListener('click', () => {
+    if (reach != null) {
+      open(reach);
+    }
+  });
 
   const remove = document.createElement('button');
   remove.className = 'yukti-Bookmark-drop';
@@ -1865,6 +1904,7 @@ function bookmarkRow(
  * rebuild costs less than the code that would patch it in place.
  */
 function bookmarkList(
+  root: string,
   open: (path: string) => void,
   drop: (path: string) => void
 ): { widget: Widget; draw: (paths: string[]) => void } {
@@ -1884,7 +1924,7 @@ function bookmarkList(
     const list = document.createElement('ul');
     list.className = 'yukti-Bookmarks-list';
     for (const path of paths) {
-      list.appendChild(bookmarkRow(path, open, drop));
+      list.appendChild(bookmarkRow(path, underRoot(path, root), open, drop));
     }
     widget.node.appendChild(list);
   };
@@ -1903,7 +1943,9 @@ function bookmarkList(
  *
  * The paths live in this plugin's settings, so they survive a restart, reach
  * every browser the same server serves, and stay editable by hand under
- * Settings, Advanced Settings Editor.
+ * Settings, Advanced Settings Editor. Each path is absolute, built from the
+ * ``yuktiRoot`` page option the yukti server extension sets. So a server
+ * started in another folder still opens every bookmark under its own root.
  *
  * Pro: a deep working folder and a notebook opened every morning are each one
  * click from the page the server already opens on.
@@ -1925,9 +1967,13 @@ const bookmarksPlugin: JupyterFrontEndPlugin<void> = {
     registry: ISettingRegistry,
     tree: INotebookTree | null
   ) => {
-    if (tree == null) {
+    // The yukti server extension sets ``yuktiRoot``. Without it no path can
+    // be made absolute, so the tab stays away. A ``/`` root becomes ``''``.
+    const rootOption = PageConfig.getOption('yuktiRoot');
+    if (tree == null || rootOption === '') {
       return;
     }
+    const root = rootOption.replace(/\/+$/, '');
     const style = document.createElement('style');
     style.textContent = BOOKMARK_STYLE;
     document.head.appendChild(style);
@@ -1941,15 +1987,16 @@ const bookmarksPlugin: JupyterFrontEndPlugin<void> = {
     const { commands } = app;
 
     /**
-     * The path the command acts on: the first selected item, or, with nothing
-     * selected, the folder the file browser shows.
+     * The absolute path the command acts on: the first selected item, or,
+     * with nothing selected, the folder the file browser shows.
      */
     const target = (): string => {
       const [item] = Array.from(browser.selectedItems());
-      if (item == null) {
-        return `${browser.model.path}/`;
+      if (item != null && item.type !== 'directory') {
+        return `${root}/${item.path}`;
       }
-      return item.type === 'directory' ? `${item.path}/` : item.path;
+      const dir = item?.path ?? browser.model.path;
+      return dir === '' ? `${root}/` : `${root}/${dir}/`;
     };
 
     const open = async (path: string): Promise<void> => {
@@ -1963,6 +2010,7 @@ const bookmarksPlugin: JupyterFrontEndPlugin<void> = {
     };
 
     const { widget, draw } = bookmarkList(
+      root,
       path => void open(path),
       path => void write(read().filter(kept => kept !== path))
     );

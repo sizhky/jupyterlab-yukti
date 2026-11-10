@@ -1,0 +1,32 @@
+k1: server-root -> bookmarks-plugin sends
+	step=s1
+	message=async
+	note=PageConfig yuktiRoot
+	description=setup_handlers sets page_config_data yuktiRoot when the extension loads. Jupyter Notebook spreads it into PageConfig, so the frontend reads the root without a request.
+	code=[setup_handlers](../../yukti/server.py){show=symbol symbol=setup_handlers kind=Function focus="match[[\"yuktiRoot\"] = server_root(web_app.settings)]" context=2}
+k2: bookmarks-plugin -> bookmarks-plugin runs
+	step=s2
+	message=sync
+	fragment=opt:no yuktiRoot
+	operand=[the option is empty]
+	operand_note=The plugin returns and the tab does not appear, because no path can be made absolute.
+	note=target(): root/path
+	description=A star press stores root/path for the selected item. A folder ends in a slash, and the root folder is root/.
+	code=[bookmarksPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=bookmarksPlugin kind=Variable focus="match[PageConfig.getOption('yuktiRoot')] match[return dir === '' ? ]" context=2}
+k3: bookmarks-plugin -> under-root runs
+	step=s3
+	pair=p-reach
+	message=sync
+	note=underRoot(path, root)
+	description=bookmarkList asks for the reach of each stored path while it draws a row.
+	code=[bookmarkList](../../yukti_frontend/src/index.ts){show=symbol symbol=bookmarkList kind=Function focus="match[bookmarkRow(path, underRoot(path, root), open, drop)]" context=2}
+k4: under-root -> bookmarks-plugin returns
+	step=s3
+	pair=p-reach
+	message=reply
+	fragment=alt:where the path lies
+	operand=[outside the root]
+	operand_note=underRoot returns null. The row stays in the list and its open button is disabled, with a title that says the path is outside the root.
+	note=path under root, or null
+	description=An absolute path under the root returns the relative remainder, and the root itself returns a slash. A legacy relative path returns unchanged.
+	code=[underRoot](../../yukti_frontend/src/index.ts){show=symbol symbol=underRoot kind=Function focus="match[if (!path.startsWith(`${root}/`)) {] match[return path.slice(root.length + 1) || '/';]" context=2}

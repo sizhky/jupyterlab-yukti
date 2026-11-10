@@ -24,7 +24,7 @@
   "properties": {
     "bookmarks": {
       "title": "Bookmarks",
-      "description": "One path per bookmark, each relative to the server root. A path that ends in a slash is a folder, and every other path is a file.",
+      "description": "One absolute path per bookmark. A server opens the bookmarks under its own root. A path that ends in a slash is a folder, and every other path is a file.",
       "type": "array",
       "items": { "type": "string" },
       "default": []

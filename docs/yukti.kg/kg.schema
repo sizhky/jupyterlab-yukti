@@ -20,6 +20,8 @@ action:
 	edges=kg.action.edges
 diff:
 	edges=kg.diff.edges
+bookmarks:
+	edges=kg.bookmarks.edges
 palette=kg.palette
 code_source=../../
 
@@ -190,3 +192,26 @@ diff:
 		clear: Step 4 - clear
 			nodes=diff-plugin,clear-diff
 			caption="A second press removes the panes, rows and classes."
+bookmarks:
+	source=bookmarks
+	layout=sequence
+	sequence_role=role
+	sequence_phase=phase
+	sequence_activation=true
+	sequence_lanes=server-root,bookmarks-plugin,under-root
+	sequence_message=message
+	sequence_fragment=fragment
+	sequence_operand=operand
+	sequence_operand_note=operand_note
+	color_by=step
+	edge_color_by=step
+	edge_label_from=note
+	hover_attrs=description,code
+	caption="Proposed view, pending review: absolute bookmark paths. The server publishes its root as yuktiRoot. The Bookmarks tab stores root/path and maps each stored path back under the current root, so a server started in another folder still opens the bookmarks inside it. underRoot is a call inside the plugin, not a peer."
+	slides:
+		store: Steps 1 to 2 - publish the root and store absolute paths
+			nodes=server-root,bookmarks-plugin
+			caption="Proposed, pending review. setup_handlers puts the resolved root into the page config. The plugin stops without it and stores root/path otherwise."
+		reach: Step 3 - map a stored path under the current root
+			nodes=bookmarks-plugin,under-root
+			caption="Proposed, pending review. A path outside the root keeps its row but disables its open button. A legacy relative path still opens."

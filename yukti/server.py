@@ -141,7 +141,19 @@ class StagedHandler(APIHandler):
             raise web.HTTPError(400, str(error)) from None
 
 
+def server_root(settings: dict[str, Any]) -> str:
+    """The server root as an absolute POSIX path.
+
+    >>> server_root({"server_root_dir": "/tmp/x/"}) == Path("/tmp/x").resolve().as_posix()
+    True
+    """
+    return Path(settings["server_root_dir"]).expanduser().resolve().as_posix()
+
+
 def setup_handlers(web_app: Any) -> None:
+    # Notebook spreads ``page_config_data`` into ``PageConfig``, so the
+    # Bookmarks tab can turn its absolute paths into paths under this root.
+    web_app.settings.setdefault("page_config_data", {})["yuktiRoot"] = server_root(web_app.settings)
     base = url_path_join(web_app.settings["base_url"], "yukti")
     web_app.add_handlers(".*$", [
         (url_path_join(base, "ask"), AskSocket),

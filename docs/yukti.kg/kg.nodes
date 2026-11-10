@@ -89,3 +89,13 @@ paint-diff: paintDiff
 clear-diff: clearDiff
 	description=The function that removes the diff class, the staged panes, the deleted rows and the changed and added classes from the notebook. paintDiff calls it first, so a repaint never stacks panes.
 	code=[clearDiff](../../yukti_frontend/src/index.ts){show=symbol symbol=clearDiff kind=Function focus=all}
+server-root: server_root
+	description=The function that returns the Jupyter server root as one resolved absolute POSIX path. setup_handlers stores it in web_app.settings page_config_data as yuktiRoot. Jupyter Notebook spreads that dict into the frontend PageConfig. Proposed, pending user review.
+	code=[server_root](../../yukti/server.py){show=symbol symbol=server_root kind=Function focus=all}
+	decision=The server publishes its root and the frontend stores absolute paths. Pro: one bookmark list serves a server started in any folder. Con: a bookmark outside the current root cannot open there.
+bookmarks-plugin: bookmarksPlugin
+	description=The plugin that adds the Bookmarks tab to the Notebook file page. It reads PageConfig yuktiRoot and stops when the option is empty. target() builds the absolute path of the selected item or the shown folder as root/path, and a folder ends in a slash. The paths live in the plugin settings. Proposed, pending user review.
+	code=[bookmarksPlugin](../../yukti_frontend/src/index.ts){show=symbol symbol=bookmarksPlugin kind=Variable focus="match[PageConfig.getOption('yuktiRoot')] match[return dir === '' ? ]" context=2}
+under-root: underRoot
+	description=The function that maps a stored path to the path under the current root that filebrowser:open-path takes. A path outside the root returns null, so bookmarkRow keeps the row and disables its open button. A legacy path without a leading slash passes through unchanged. It is a call inside the bookmarks plugin, not a peer of it.
+	code=[underRoot](../../yukti_frontend/src/index.ts){show=symbol symbol=underRoot kind=Function focus=all}
