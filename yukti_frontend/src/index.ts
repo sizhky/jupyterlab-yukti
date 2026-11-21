@@ -2691,6 +2691,12 @@ const FOOTER_STYLE = `
   font-size: var(--jp-ui-font-size0);
 }
 .${FOOTER_CLASS}:empty { display: none; }
+/* At width <= 760px JupyterLab stacks the input area in a column, so a 0 basis
+   is a 0 height and the editor collapses; both items take their content height. */
+@media only screen and (width <= 760px) {
+  .jp-InputArea:has(> .${FOOTER_CLASS}:not(:empty)) > .jp-InputArea-editor { flex: 0 0 auto; }
+  .${FOOTER_CLASS} { flex: 0 0 auto; margin-left: var(--jp-code-padding); }
+}
 `;
 
 /**
